@@ -10,9 +10,6 @@ public struct JiggleColliderSerializable {
     public Transform transform;
     public JiggleCollider collider;
 
-    private const int RingSegments = 32;
-    private const int ArcSegments = 16;
-
     public void OnDrawGizmosSelected() {
         if (transform == null) {
             return;
@@ -24,9 +21,9 @@ public struct JiggleColliderSerializable {
             case JiggleCollider.JiggleColliderType.Sphere: {
                 var r = collider.worldRadius;
                 // Three orthogonal rings, VRC PhysBone-style wireframe.
-                DrawEllipseArc(position, Vector3.right, Vector3.up, r, r, 0f, Mathf.PI * 2f, RingSegments);
-                DrawEllipseArc(position, Vector3.up, Vector3.forward, r, r, 0f, Mathf.PI * 2f, RingSegments);
-                DrawEllipseArc(position, Vector3.forward, Vector3.right, r, r, 0f, Mathf.PI * 2f, RingSegments);
+                JiggleGizmoDraw.DrawEllipseArc(position, Vector3.right, Vector3.up, r, r, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
+                JiggleGizmoDraw.DrawEllipseArc(position, Vector3.up, Vector3.forward, r, r, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
+                JiggleGizmoDraw.DrawEllipseArc(position, Vector3.forward, Vector3.right, r, r, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
             }
             break;
             case JiggleCollider.JiggleColliderType.Capsule: {
@@ -64,8 +61,8 @@ public struct JiggleColliderSerializable {
                 var u = (Vector3)uAxis;
                 var v = (Vector3)vAxis;
                 // Equator rings at the cylinder/hemisphere junction, each at its own end's radii
-                DrawEllipseArc(a, u, v, ruStart, rvStart, 0f, Mathf.PI * 2f, RingSegments);
-                DrawEllipseArc(b, u, v, ruEnd, rvEnd, 0f, Mathf.PI * 2f, RingSegments);
+                JiggleGizmoDraw.DrawEllipseArc(a, u, v, ruStart, rvStart, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
+                JiggleGizmoDraw.DrawEllipseArc(b, u, v, ruEnd, rvEnd, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
                 // Side silhouette lines: connect matching angular points on the two (possibly differently sized) rings.
                 Gizmos.DrawLine(a + u * ruStart, b + u * ruEnd);
                 Gizmos.DrawLine(a - u * ruStart, b - u * ruEnd);
@@ -73,10 +70,10 @@ public struct JiggleColliderSerializable {
                 Gizmos.DrawLine(a - v * rvStart, b - v * rvEnd);
                 // Hemisphere arcs, bulging away from the cylinder body. Both arcs at a given cap share the same
                 // axial radius, so they meet exactly at the pole (a - axisDir * rAxisStart / b + axisDir * rAxisEnd).
-                DrawEllipseArc(a, u, -axisDir, ruStart, rAxisStart, 0f, Mathf.PI, ArcSegments);
-                DrawEllipseArc(a, v, -axisDir, rvStart, rAxisStart, 0f, Mathf.PI, ArcSegments);
-                DrawEllipseArc(b, u, axisDir, ruEnd, rAxisEnd, 0f, Mathf.PI, ArcSegments);
-                DrawEllipseArc(b, v, axisDir, rvEnd, rAxisEnd, 0f, Mathf.PI, ArcSegments);
+                JiggleGizmoDraw.DrawEllipseArc(a, u, -axisDir, ruStart, rAxisStart, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+                JiggleGizmoDraw.DrawEllipseArc(a, v, -axisDir, rvStart, rAxisStart, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+                JiggleGizmoDraw.DrawEllipseArc(b, u, axisDir, ruEnd, rAxisEnd, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+                JiggleGizmoDraw.DrawEllipseArc(b, v, axisDir, rvEnd, rAxisEnd, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
                 // Cross marker on the start (a) cap. Start and End are defined by the direction Axis points, and
                 // large offsets can even swap the two ends, so mark which one the Start fields drive.
                 var markerSize = Mathf.Max(ruStart, rvStart) * 0.4f;
@@ -107,17 +104,6 @@ public struct JiggleColliderSerializable {
                 Gizmos.DrawLine(position, position + upDir * size * 0.5f);
             }
             break;
-        }
-    }
-
-    // Draws an ellipse (or arc thereof) in the plane spanned by axisA/axisB, centered at `center`.
-    private static void DrawEllipseArc(Vector3 center, Vector3 axisA, Vector3 axisB, float radiusA, float radiusB, float startAngle, float endAngle, int segments) {
-        var prevPoint = center + axisA * (Mathf.Cos(startAngle) * radiusA) + axisB * (Mathf.Sin(startAngle) * radiusB);
-        for (int i = 1; i <= segments; i++) {
-            var t = startAngle + (endAngle - startAngle) * i / segments;
-            var point = center + axisA * (Mathf.Cos(t) * radiusA) + axisB * (Mathf.Sin(t) * radiusB);
-            Gizmos.DrawLine(prevPoint, point);
-            prevPoint = point;
         }
     }
 }

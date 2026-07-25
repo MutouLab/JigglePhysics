@@ -87,6 +87,7 @@ public struct JiggleJobSimulate : IJobFor {
                 }
 
                 point.worldRadius = 0f;
+                point.collisionOffset = float3.zero;
                 point.workingPosition = point.pose;
             } else if (point.hasTransform) {
                 // "real" particles
@@ -97,8 +98,12 @@ public struct JiggleJobSimulate : IJobFor {
                 point.desiredLengthToParent = math.distance(point.pose, parent.pose);
                 var averagePointScale = (math.abs(inputPose.scale.x) + math.abs(inputPose.scale.y) + math.abs(inputPose.scale.z)) / 3f;
                 point.worldRadius = parameters.collisionRadius * averagePointScale;
-                min = math.min(min, point.position-new float3(point.worldRadius));
-                max = math.max(max, point.position+new float3(point.worldRadius));
+                // Rotation doesn't change mid-substep, so resolve the collision proxy offset to world space once
+                // here rather than per depenetration check.
+                point.collisionOffset = math.rotate(inputPose.rotation, parameters.collisionOffset * averagePointScale);
+                var boundsExtent = math.abs(point.collisionOffset) + new float3(point.worldRadius);
+                min = math.min(min, point.position-boundsExtent);
+                max = math.max(max, point.position+boundsExtent);
             } else {
                 // virtual end particles
                 var parent = tree.points[point.parentIndex];
@@ -106,6 +111,7 @@ public struct JiggleJobSimulate : IJobFor {
                 point.parentPose = parent.pose;
                 point.desiredLengthToParent = math.distance(point.pose, point.parentPose);
                 point.worldRadius = 0f;
+                point.collisionOffset = float3.zero;
             }
             tree.points[i] = point;
         }
@@ -184,17 +190,20 @@ public struct JiggleJobSimulate : IJobFor {
             case JiggleCollider.JiggleColliderType.Sphere: {
                 var hardness = 1f;
                 var colliderPosition = collider.localToWorldMatrix.c3.xyz;
-                var pointPosition = point->workingPosition;
-                var otherPosition = otherPoint->workingPosition;
+                var pointPosition = point->workingPosition + point->collisionOffset;
+                var otherPosition = otherPoint->workingPosition + otherPoint->collisionOffset;
                 var pointRadius = point->worldRadius;
                 var colliderRadius = collider.worldRadius;
-                var combinedRadius = pointRadius + colliderRadius;
                 var boneClosestPoint = GetClosestPointOnLineSegment(
                         colliderPosition,
                         pointPosition,
                         otherPosition,
                         out var tValue
                         );
+                // The bone's own radius tapers across the segment, so the collisionRadius curve shapes the
+                // volume within a segment instead of only stepping between them. tValue runs from this point
+                // (0) to its parent (1); with a flat curve both radii match and this is a no-op.
+                var combinedRadius = GetBoneRadius(point, otherPoint, tValue) + colliderRadius;
                 var sphere_diff = boneClosestPoint - colliderPosition;
                 var sphere_distance = math.length(sphere_diff);
                 var depenetrationMagnitude = combinedRadius - sphere_distance;
@@ -206,9 +215,11 @@ public struct JiggleJobSimulate : IJobFor {
                 var pValue = math.clamp(2f - tValue * 2f, 0f, 1f);
                 depenetrationVector *= hardness * pValue;
                 // TODO: find decent rigidbody solve instead of just pushing them both naively
+                // This second pass measures from this point itself rather than along the segment, so it takes
+                // this point's own radius (the segment taper evaluated at t = 0).
                 sphere_diff = pointPosition - colliderPosition;
                 sphere_distance = math.length(sphere_diff);
-                depenetrationMagnitude = combinedRadius - sphere_distance;
+                depenetrationMagnitude = pointRadius + colliderRadius - sphere_distance;
                 if (depenetrationMagnitude > 0f) {
                     depenetrationDir = math.normalizesafe(sphere_diff, new float3(0, 0, 1));
                     var depenetrationVector2 = depenetrationDir * depenetrationMagnitude;
@@ -230,14 +241,15 @@ public struct JiggleJobSimulate : IJobFor {
                 collider.GetWorldCapsuleSegment(out var capsuleA, out var capsuleB);
                 var capsuleSegment = capsuleB - capsuleA;
                 var capsuleSegmentLengthSq = math.lengthsq(capsuleSegment);
-                var pointPosition = point->workingPosition;
-                var otherPosition = otherPoint->workingPosition;
+                var pointPosition = point->workingPosition + point->collisionOffset;
+                var otherPosition = otherPoint->workingPosition + otherPoint->collisionOffset;
                 var pointRadius = point->worldRadius;
                 // Find closest points between capsule axis and bone segment
                 ClosestPointsOnTwoSegments(capsuleA, capsuleB, pointPosition, otherPosition, out var closestOnCapsule, out var closestOnBone, out var tValueBone);
                 var cap_diff = closestOnBone - closestOnCapsule;
                 var cap_radii = GetCapsuleRadii(collider, closestOnCapsule, capsuleA, capsuleSegment, capsuleSegmentLengthSq);
-                var cap_combinedRadius = pointRadius + GetEllipseColliderRadius(collider, cap_diff, cap_radii);
+                // Same per-segment taper as the sphere case: tValueBone runs from this point (0) to its parent (1).
+                var cap_combinedRadius = GetBoneRadius(point, otherPoint, tValueBone) + GetEllipseColliderRadius(collider, cap_diff, cap_radii);
                 var cap_distance = math.length(cap_diff);
                 var cap_depenetrationMagnitude = cap_combinedRadius - cap_distance;
                 if (cap_depenetrationMagnitude <= 0f) {
@@ -273,7 +285,7 @@ public struct JiggleJobSimulate : IJobFor {
             case JiggleCollider.JiggleColliderType.Plane: {
                 var colliderPosition = collider.localToWorldMatrix.c3.xyz;
                 var planeNormal = math.normalizesafe(collider.localToWorldMatrix.c1.xyz, new float3(0, 1, 0));
-                var pointPosition = point->workingPosition;
+                var pointPosition = point->workingPosition + point->collisionOffset;
                 var pointRadius = point->worldRadius;
                 var signedDistance = math.dot(pointPosition - colliderPosition, planeNormal);
                 var penetration = pointRadius - signedDistance;
@@ -323,6 +335,13 @@ public struct JiggleJobSimulate : IJobFor {
     // Returns the per-axis radii at `closest` (a point on the capsule's a-b segment) by interpolating between
     // the two end radii along the segment parameter t. This is an approximation, not a true tapered-capsule
     // (frustum) SDF: see the comment on JiggleCollider.startRadius.
+    // Returns the bone's collision radius at parameter t along the segment running from `point` (t = 0) to its
+    // parent `otherPoint` (t = 1). Each point carries its own radius from the collisionRadius curve, so
+    // interpolating lets a single segment taper rather than taking one endpoint's radius for its whole length.
+    private unsafe float GetBoneRadius(JiggleSimulatedPoint* point, JiggleSimulatedPoint* otherPoint, float t) {
+        return math.lerp(point->worldRadius, otherPoint->worldRadius, t);
+    }
+
     private float3 GetCapsuleRadii(JiggleCollider collider, float3 closest, float3 segA, float3 segVec, float segLengthSq) {
         var t = segLengthSq < 1e-12f ? 0f : math.saturate(math.dot(closest - segA, segVec) / segLengthSq);
         return math.lerp(collider.worldStartRadius, collider.worldEndRadius, t);

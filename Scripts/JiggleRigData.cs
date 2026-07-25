@@ -290,16 +290,44 @@ public struct JiggleRigData {
         var jiggleTree = JigglePhysics.CreateJiggleTree(this, null);
         var points = jiggleTree.points;
         var parameters = jiggleTree.parameters;
+        var bones = jiggleTree.bones;
         var pointCount = points.Length;
-        var cam = Camera.current;
         for (var index = 0; index < pointCount; index++) {
             var simulatedPoint = points[index];
             if (simulatedPoint.parentIndex == -1) continue;
-            if (!points[simulatedPoint.parentIndex].hasTransform) continue;
-            DrawBone(points[simulatedPoint.parentIndex].position, simulatedPoint.position, jiggleTree.bones[index].lossyScale, parameters[simulatedPoint.parentIndex], cam);
+            var parentIndex = simulatedPoint.parentIndex;
+            var parentPoint = points[parentIndex];
+            // Only segments between two real bones collide: DoDepenetration bails out as soon as either end is
+            // a virtual point (the projected root and leaf tips), so drawing those would show collision volume
+            // that does not exist - a leaf tip would taper the capsule to a point. The last real bone still
+            // appears, as the tail of the segment coming from its parent.
+            if (!parentPoint.hasTransform || !simulatedPoint.hasTransform) continue;
+
+            // The editor never runs Cache(), so JiggleSimulatedPoint.collisionOffset is never populated here;
+            // resolve the same bone-local-space -> world-space transform Cache() does, directly from the
+            // (always-valid, see JigglePhysics.Visit) Transform each point is associated with.
+            var headBone = bones[parentIndex];
+            var headParameters = parameters[parentIndex];
+            var headAverageScale = AverageScale(headBone.lossyScale);
+            var headOffset = headBone.rotation * (Vector3)(headParameters.collisionOffset * headAverageScale);
+            var headRadius = headParameters.collisionRadius * headAverageScale;
+
+            var tailBone = bones[index];
+            var tailParameters = parameters[index];
+            var tailAverageScale = AverageScale(tailBone.lossyScale);
+            var tailOffset = tailBone.rotation * (Vector3)(tailParameters.collisionOffset * tailAverageScale);
+            var tailRadius = tailParameters.collisionRadius * tailAverageScale;
+
+            DrawBone(parentPoint.position, simulatedPoint.position, headOffset, tailOffset, headRadius, tailRadius, headParameters);
         }
     }
-    
+
+    // Mirrors the averaging JiggleJobSimulate.Cache() applies at runtime, including the abs: a mirrored bone
+    // carries a negative lossyScale component, and without it the gizmo would disagree with the real radius.
+    private static float AverageScale(Vector3 lossyScale) {
+        return (Mathf.Abs(lossyScale.x) + Mathf.Abs(lossyScale.y) + Mathf.Abs(lossyScale.z)) / 3f;
+    }
+
     private static void DrawWireDisc(Vector3 center, Vector3 normal, float radius, int segmentCount = 32) {
         normal.Normalize();
         Vector3 up = normal;
@@ -317,16 +345,41 @@ public struct JiggleRigData {
         }
     }
     
-    private void DrawBone(Vector3 boneHead, Vector3 boneTail, Vector3 boneScale, JigglePointParameters jigglePointParameters, Camera cam) {
-        var camForward = cam.transform.forward;
-        var scale = jigglePointParameters.collisionRadius * (boneScale.x + boneScale.y + boneScale.z)/3f;
-        DrawWireDisc(boneHead, camForward, scale);
-        Gizmos.DrawLine(boneHead, boneTail);
+    // boneHead/boneTail are the animated bone positions; headOffset/tailOffset shift the collision-capsule
+    // ends away from them (mirrors JiggleSimulatedPoint.collisionOffset), and headRadius/tailRadius are the
+    // (already bone-scaled) collisionRadius at each end, since the curve can taper it along the chain.
+    private static void DrawBone(Vector3 boneHead, Vector3 boneTail, Vector3 headOffset, Vector3 tailOffset, float headRadius, float tailRadius, JigglePointParameters headParameters) {
+        var a = boneHead + headOffset;
+        var b = boneTail + tailOffset;
+        var segVec = b - a;
+        var axisDir = segVec.sqrMagnitude > 1e-12f ? segVec.normalized : Vector3.up;
+        var u = Vector3.Cross(axisDir, Vector3.forward).normalized;
+        if (u.magnitude < 0.01f) {
+            u = Vector3.Cross(axisDir, Vector3.right).normalized;
+        }
+        var v = Vector3.Cross(axisDir, u).normalized;
+
+        // Equator rings at each end (the collisionRadius curve can taper, so the two ends can differ)
+        JiggleGizmoDraw.DrawEllipseArc(a, u, v, headRadius, headRadius, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
+        JiggleGizmoDraw.DrawEllipseArc(b, u, v, tailRadius, tailRadius, 0f, Mathf.PI * 2f, JiggleGizmoDraw.RingSegments);
+        // Side silhouette lines: connect matching angular points on the two (possibly differently sized) rings.
+        Gizmos.DrawLine(a + u * headRadius, b + u * tailRadius);
+        Gizmos.DrawLine(a - u * headRadius, b - u * tailRadius);
+        Gizmos.DrawLine(a + v * headRadius, b + v * tailRadius);
+        Gizmos.DrawLine(a - v * headRadius, b - v * tailRadius);
+        // Cap arcs, bulging away from the segment body.
+        JiggleGizmoDraw.DrawEllipseArc(a, u, -axisDir, headRadius, headRadius, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+        JiggleGizmoDraw.DrawEllipseArc(a, v, -axisDir, headRadius, headRadius, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+        JiggleGizmoDraw.DrawEllipseArc(b, u, axisDir, tailRadius, tailRadius, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+        JiggleGizmoDraw.DrawEllipseArc(b, v, axisDir, tailRadius, tailRadius, 0f, Mathf.PI, JiggleGizmoDraw.ArcSegments);
+
+        // Angle limit disc: kept as-is, drawn from the un-offset bone positions since it represents a joint
+        // constraint rather than the collision shape.
         var boneDirection = (boneTail - boneHead).normalized;
         var angleLimitScale = 0.05f;
-        DrawWireDisc(boneHead + boneDirection * (angleLimitScale * Mathf.Cos(jigglePointParameters.angleLimit * Mathf.Deg2Rad)),
+        DrawWireDisc(boneHead + boneDirection * (angleLimitScale * Mathf.Cos(headParameters.angleLimit * Mathf.Deg2Rad)),
             boneDirection,
-            angleLimitScale * Mathf.Sin(jigglePointParameters.angleLimit * Mathf.Deg2Rad));
+            angleLimitScale * Mathf.Sin(headParameters.angleLimit * Mathf.Deg2Rad));
     }
 #if UNITY_EDITOR
 #endif

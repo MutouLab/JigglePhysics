@@ -31,6 +31,8 @@
             <ui:Toggle label="Collision" name="CollisionToggle"/>
             <ui:VisualElement name="CollisionSection" style="flex-grow: 1;">
                 <ui:Instance template="CurvableFloat" name="CollisionRadiusControl"/>
+                <uie:PropertyField name="CollisionOffsetStartField"/>
+                <uie:PropertyField name="CollisionOffsetEndField"/>
             </ui:VisualElement>
         </ui:VisualElement>
     </ui:VisualElement>

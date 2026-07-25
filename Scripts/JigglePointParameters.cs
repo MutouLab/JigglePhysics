@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace GatorDragonGames.JigglePhysics
@@ -21,6 +22,9 @@ public struct JigglePointParameters
     public float drag;
     public float ignoreRootMotion;
     public float collisionRadius;
+    // Bone-local-space offset for the collision proxy position (see JiggleSimulatedPoint.collisionOffset for
+    // the resolved world-space value used during depenetration).
+    public float3 collisionOffset;
 }
 
 [Serializable]
@@ -73,6 +77,8 @@ public struct JiggleTreeInputParameters {
     public JiggleTreeCurvedFloat airDrag;         // 0..1
     public JiggleTreeCurvedFloat gravity;         // arbitrary
     public JiggleTreeCurvedFloat collisionRadius; // >= 0
+    public float3 collisionOffsetStart;           // bone-local space, root end
+    public float3 collisionOffsetEnd;             // bone-local space, tip end
     public float blend;                           // 0..1
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -90,6 +96,7 @@ public struct JiggleTreeInputParameters {
         float stretchVal = adv ? stretch.Evaluate(t) : 0f;
         float angleLimitVal = angleLimitToggle ? angleLimit.Evaluate(t) : 0f;
         float collisionVal = (collisionToggle && adv) ? collisionRadius.Evaluate(t) : 0f;
+        float3 collisionOffsetVal = (collisionToggle && adv) ? math.lerp(collisionOffsetStart, collisionOffsetEnd, t) : float3.zero;
 
         float stiffSq = stiff * stiff;
         float oneMinusStr = 1f - stretchVal;
@@ -110,7 +117,8 @@ public struct JiggleTreeInputParameters {
             blend = 1f,
             drag = dragVal,
             airDrag = airVal,
-            collisionRadius = collisionVal
+            collisionRadius = collisionVal,
+            collisionOffset = collisionOffsetVal
         };
     }
 

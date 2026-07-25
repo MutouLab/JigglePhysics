@@ -122,6 +122,14 @@ public class JiggleTreeInputPropertiesPropertyDrawer : PropertyDrawer {
             "The radius used in collisions in meters. This is in world space, but will adjust in runtime if bones are scaled at runtime.",
             0f);
 
+        var collisionOffsetStartElement = visualElement.Q<PropertyField>("CollisionOffsetStartField");
+        collisionOffsetStartElement.BindProperty(property.FindPropertyRelative(nameof(JiggleTreeInputParameters.collisionOffsetStart)));
+        collisionOffsetStartElement.tooltip = "Bone-local-space offset for the collision capsule at the root end of the bone (rotated by the bone at runtime).";
+
+        var collisionOffsetEndElement = visualElement.Q<PropertyField>("CollisionOffsetEndField");
+        collisionOffsetEndElement.BindProperty(property.FindPropertyRelative(nameof(JiggleTreeInputParameters.collisionOffsetEnd)));
+        collisionOffsetEndElement.tooltip = "Bone-local-space offset for the collision capsule at the tip end of the bone (rotated by the bone at runtime).";
+
         var advancedToggleElement = visualElement.Q<Toggle>("AdvancedToggle");
         advancedToggleElement.BindProperty(
             property.FindPropertyRelative(nameof(JiggleTreeInputParameters.advancedToggle)));

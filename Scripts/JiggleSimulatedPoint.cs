@@ -15,6 +15,9 @@ public unsafe struct JiggleSimulatedPoint {
     public float desiredLengthToParent;
     public bool animated;
     public float worldRadius;
+    // World-space offset (rotation + averagePointScale already applied) added to workingPosition to form the
+    // collision proxy position used in DoDepenetration. Computed once per Cache(), see JiggleJobSimulate.Cache().
+    public float3 collisionOffset;
     //public float3 debug;
 
     // Set at initialization
@@ -58,6 +61,10 @@ public unsafe struct JiggleSimulatedPoint {
         }
         if (!GetIsValid(worldRadius)) {
             failReason = "worldRadius is NaN";
+            return false;
+        }
+        if (!GetIsValid(collisionOffset)) {
+            failReason = "collisionOffset is NaN";
             return false;
         }
         if (!GetIsValid(distanceFromRoot)) {
@@ -112,6 +119,9 @@ public unsafe struct JiggleSimulatedPoint {
         }
         if (!GetIsValid(worldRadius)) {
             worldRadius = 0.1f;
+        }
+        if (!GetIsValid(collisionOffset)) {
+            collisionOffset = float3.zero;
         }
         if (!GetIsValid(distanceFromRoot)) {
             distanceFromRoot = 0.1f;

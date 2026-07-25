@@ -20,6 +20,11 @@ public class JiggleRigEditor : Editor {
         if (serializedObject.isEditingMultipleObjects) return visualElement;
         
         var targetRig = (JiggleRig)target;
+        // The inspector can rebuild while the target is being destroyed, most notably when exiting
+        // play mode with a JiggleRig selected. Accessing gameObject then throws
+        // MissingReferenceException, so bail out and let the next rebuild draw the full inspector.
+        if (targetRig == null) return visualElement;
+
         var targetObject = targetRig.gameObject;
         var assetType = PrefabUtility.GetPrefabAssetType(targetObject);
         var instanceStatus = PrefabUtility.GetPrefabInstanceStatus(targetObject);

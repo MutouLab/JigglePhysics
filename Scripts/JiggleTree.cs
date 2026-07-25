@@ -8,6 +8,9 @@ public class JiggleTree {
     public JiggleSimulatedPoint[] points;
     public Vector3[] restPositions;
     public Quaternion[] restRotations;
+    // Authored rest local scale, parallel to restPositions/restRotations (see JiggleTransformCachedData.restLocalScale
+    // for why this must never be read live from the bone).
+    public Vector3[] restScales;
     public JigglePointParameters[] parameters;
     public Transform[] personalColliderTransforms;
     public JiggleCollider[] personalColliders;
@@ -44,7 +47,24 @@ public class JiggleTree {
             if (!bone) continue;
             bone.localPosition = restPositions[i];
             bone.localRotation = restRotations[i];
+            // Guarded (unlike position/rotation above) because a squash-affected bone landing here mid-teardown
+            // is exactly the scenario this whole rest-scale authority fix is about: better to leave the scale
+            // alone than write a zero/non-finite value over it.
+            var restScale = restScales[i];
+            if (IsValidScale(restScale)) {
+                bone.localScale = restScale;
+            }
         }
+    }
+
+    // Shares its criteria with JiggleMemoryBus's copy (also Vector3-based) and JiggleJobBulkTransformReset's
+    // (float3-based, since that one is Burst-compiled): a scale is only trusted if every component is both
+    // non-zero and finite. A zero/non-finite value would collapse or corrupt the bone outright, which is worse
+    // than simply not touching it.
+    private static bool IsValidScale(Vector3 scale) {
+        return scale.x != 0f && scale.y != 0f && scale.z != 0f
+               && !float.IsNaN(scale.x) && !float.IsNaN(scale.y) && !float.IsNaN(scale.z)
+               && !float.IsInfinity(scale.x) && !float.IsInfinity(scale.y) && !float.IsInfinity(scale.z);
     }
 
     public void Dispose() {
@@ -84,11 +104,12 @@ public class JiggleTree {
         jiggleTreeJobData.transformIndexOffset = (uint)offset;
     }
 
-    public JiggleTree(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations) {
+    public JiggleTree(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations, List<Vector3> restScales) {
         dirty = false;
         this.bones = bones.ToArray();
         this.restPositions = restPositions.ToArray();
         this.restRotations = restRotations.ToArray();
+        this.restScales = restScales.ToArray();
         this.points = points.ToArray();
         this.parameters = parameters.ToArray();
         this.personalColliders = personalColliders.ToArray();
@@ -100,13 +121,14 @@ public class JiggleTree {
 #endif
     }
 
-    public void Set(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations) {
+    public void Set(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations, List<Vector3> restScales) {
         var bonesCount = bones.Count;
         var pointsCount = points.Count;
         if (bonesCount == this.bones.Length && pointsCount == this.points.Length) {
             bones.CopyTo(this.bones);
             restPositions.CopyTo(this.restPositions);
             restRotations.CopyTo(this.restRotations);
+            restScales.CopyTo(this.restScales);
             points.CopyTo(this.points);
             parameters.CopyTo(this.parameters);
         } else {
@@ -115,6 +137,7 @@ public class JiggleTree {
             this.parameters = parameters.ToArray();
             this.restPositions = restPositions.ToArray();
             this.restRotations = restRotations.ToArray();
+            this.restScales = restScales.ToArray();
         }
 
         var personalColliderTransformsCount = personalColliderTransforms.Count;

@@ -600,10 +600,17 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
                     isVirtual = !hasTransform,
                     position = jiggleTree.restPositions[o],
                     rotation = jiggleTree.restRotations[o],
-                    // Captured once here (tree (re)build), not tracked continuously like position/rotation
-                    // above: this is the base scale the squash feature multiplies against (see
-                    // JiggleJobSimulate.ApplyPose), and jiggle bones aren't expected to be scale-animated.
-                    scale = bone.localScale,
+                    // This must be the authored rest scale (JiggleTree.restScales, sourced from
+                    // JiggleTransformCachedData.restLocalScale), never read live from the bone: squash writes
+                    // localScale every frame, so a live read here would capture squash's own output as "rest" the
+                    // moment a parameter change makes the tree rebuild mid-squash, corrupting it further on every
+                    // subsequent rebuild. This is the base scale squash multiplies against, see JiggleJobSimulate.ApplyPose.
+                    // Stored raw, deliberately: an entry that predates the restLocalScale migration comes
+                    // through as zero, and every consumer already treats that as "never captured" and leaves
+                    // scale alone (JiggleJobBulkTransformReset skips the write, ApplyPose skips squash).
+                    // Substituting identity here would instead have the reset job overwrite a bone that was
+                    // authored at some other scale with 1 every frame.
+                    scale = jiggleTree.restScales[o],
                 };
                 simulateInputPosesArray[index + o] = pose;
                 restPoseTransformsArray[index + o] = localPose;

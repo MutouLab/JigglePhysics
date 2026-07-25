@@ -11,6 +11,7 @@ public static class JigglePhysics {
     private static readonly List<Transform> tempTransforms = new ();
     private static readonly List<Vector3> tempRestLocalPositions = new ();
     private static readonly List<Quaternion> tempRestLocalRotations = new ();
+    private static readonly List<Vector3> tempRestLocalScales = new ();
     private static readonly List<JiggleSimulatedPoint> tempPoints = new();
     private static readonly List<JigglePointParameters> tempParameters = new ();
     private static readonly List<JiggleCollider> tempColliders = new ();
@@ -234,6 +235,7 @@ public static class JigglePhysics {
         tempParameters.Clear();
         tempRestLocalPositions.Clear();
         tempRestLocalRotations.Clear();
+        tempRestLocalScales.Clear();
         jiggleRig.GetJiggleColliders(tempColliders);
         jiggleRig.GetJiggleColliderTransforms(tempColliderTransforms);
         if (!jiggleRig.GetCacheIsValid()) jiggleRig.BuildNormalizedDistanceFromRootList();
@@ -260,7 +262,11 @@ public static class JigglePhysics {
         jiggleRig.rootBone.GetLocalPositionAndRotation(out var localPosition, out var localRotation);
         tempRestLocalPositions.Add(localPosition);
         tempRestLocalRotations.Add(localRotation);
-        Visit(jiggleRig.rootBone, tempTransforms, tempPoints, tempParameters, tempRestLocalPositions, tempRestLocalRotations, 0, jiggleRig, backProjection, 0f, out int childIndex);
+        // This entry is the virtual root point's transform placeholder (see the JiggleSimulatedPoint added just
+        // above); that point is always virtual, so its pose (position/rotation/scale alike) is never written
+        // back to a bone. Reading live here like position/rotation above is harmless for the same reason.
+        tempRestLocalScales.Add(jiggleRig.rootBone.localScale);
+        Visit(jiggleRig.rootBone, tempTransforms, tempPoints, tempParameters, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales, 0, jiggleRig, backProjection, 0f, out int childIndex);
         if (childIndex != -1) {
             var rootPoint = tempPoints[0];
             AddChildToPoint(ref rootPoint, childIndex);
@@ -269,10 +275,10 @@ public static class JigglePhysics {
 
         Profiler.EndSample();
         if (tree != null) {
-            tree.Set(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations);
+            tree.Set(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales);
             return tree;
         } else {
-            return new JiggleTree(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations);
+            return new JiggleTree(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales);
         }
     }
 
@@ -291,7 +297,7 @@ public static class JigglePhysics {
         }
     }
 
-    private static void Visit(Transform t, List<Transform> transforms, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Vector3> restLocalPositions, List<Quaternion> restLocalRotations, int parentIndex, JiggleRigData lastJiggleRig, Vector3 lastPosition, float currentLength, out int newIndex) {
+    private static void Visit(Transform t, List<Transform> transforms, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Vector3> restLocalPositions, List<Quaternion> restLocalRotations, List<Vector3> restLocalScales, int parentIndex, JiggleRigData lastJiggleRig, Vector3 lastPosition, float currentLength, out int newIndex) {
         if (t == null) {
             newIndex = -1;
             return;
@@ -307,7 +313,7 @@ public static class JigglePhysics {
                 if (validChildrenCount > 0) {
                     for (int i = 0; i < validChildrenCount; i++) {
                         var child = lastJiggleRig.GetValidChild(t, i);
-                        Visit(child, transforms, points, parameters, restLocalPositions, restLocalRotations, parentIndex, lastJiggleRig, lastPosition, currentLength, out int childIndex);
+                        Visit(child, transforms, points, parameters, restLocalPositions, restLocalRotations, restLocalScales, parentIndex, lastJiggleRig, lastPosition, currentLength, out int childIndex);
                         if (childIndex != -1) {
                             var record = points[parentIndex];
                             AddChildToPoint(ref record, childIndex);
@@ -319,6 +325,7 @@ public static class JigglePhysics {
                     transforms.Add(t);
                     restLocalPositions.Add(cache.restLocalPosition);
                     restLocalRotations.Add(new Quaternion(cache.restLocalRotation.x, cache.restLocalRotation.y, cache.restLocalRotation.z, cache.restLocalRotation.w));
+                    restLocalScales.Add(cache.restLocalScale);
                     var projDir = currentPosition - lastPosition;
                     if (projDir.sqrMagnitude < MERGE_DISTANCE * MERGE_DISTANCE) {
                         var parentPoint = points[parentIndex];
@@ -350,6 +357,7 @@ public static class JigglePhysics {
             transforms.Add(t);
             restLocalPositions.Add(cache.restLocalPosition);
             restLocalRotations.Add(new Quaternion(cache.restLocalRotation.x, cache.restLocalRotation.y, cache.restLocalRotation.z, cache.restLocalRotation.w));
+            restLocalScales.Add(cache.restLocalScale);
             var parameter = lastJiggleRig.GetJiggleBoneParameter(cache.normalizedDistanceFromRoot);
             if ((lastJiggleRig.excludeRoot && t == lastJiggleRig.rootBone) || lastJiggleRig.GetIsExcluded(t)) {
                 parameter = new JigglePointParameters() {
@@ -381,6 +389,7 @@ public static class JigglePhysics {
                 transforms.Add(t);
                 restLocalPositions.Add(cache.restLocalPosition);
                 restLocalRotations.Add(new Quaternion(cache.restLocalRotation.x, cache.restLocalRotation.y, cache.restLocalRotation.z, cache.restLocalRotation.w));
+                restLocalScales.Add(cache.restLocalScale);
                 points.Add(new JiggleSimulatedPoint() { // virtual projected tip
                     position = currentPosition + (currentPosition - lastPosition),
                     lastPosition = currentPosition + (currentPosition - lastPosition),
@@ -397,7 +406,7 @@ public static class JigglePhysics {
             } else {
                 for (int i = 0; i < validChildrenCount; i++) {
                     var child = lastJiggleRig.GetValidChild(t, i);
-                    Visit(child, transforms, points, parameters, restLocalPositions, restLocalRotations, newIndex, lastJiggleRig, currentPosition, currentLength, out int childIndex);
+                    Visit(child, transforms, points, parameters, restLocalPositions, restLocalRotations, restLocalScales, newIndex, lastJiggleRig, currentPosition, currentLength, out int childIndex);
                     if (childIndex != -1) {
                         var record = points[newIndex];
                         AddChildToPoint(ref record, childIndex);

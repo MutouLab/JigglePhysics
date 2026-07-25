@@ -25,8 +25,16 @@ public struct JigglePointParameters
     // Bone-local-space offset for the collision proxy position (see JiggleSimulatedPoint.collisionOffset for
     // the resolved world-space value used during depenetration).
     public float3 collisionOffset;
-    // 0..1 strength of contact-driven "marshmallow" scale squash (see JiggleSimulatedPoint.squashScale).
+    // 0..1 strength of classic squash & stretch driven by this bone's current length vs. its rest length (see
+    // JiggleJobSimulate.ApplyPose); 0 never touches the bone's scale at all.
     public float squash;
+    // How far the cross-section bulges for a given amount of length compression, as an exponent: 1 is exact
+    // volume preservation, 0 compresses without widening, above 1 exaggerates. See JiggleJobSimulate.ApplyPose.
+    public float squashBulge;
+    // 0..1 strength of contact-driven elasticity softening, and the normalizedPush (see
+    // JiggleJobSimulate.GetNormalizedPush) above which it starts ramping in. See JiggleJobSimulate.GetContactSoftening.
+    public float contactSoftness;
+    public float contactSoftnessThreshold;
 }
 
 [Serializable]
@@ -82,6 +90,9 @@ public struct JiggleTreeInputParameters {
     public float3 collisionOffsetStart;           // bone-local space, root end
     public float3 collisionOffsetEnd;             // bone-local space, tip end
     public JiggleTreeCurvedFloat squash;          // 0..1, default 0 (no squash, see JigglePointParameters.squash)
+    public float squashBulge;                     // >= 0, default 1 (exact volume preservation)
+    public JiggleTreeCurvedFloat contactSoftness; // 0..1, default 0 (no softening, see JigglePointParameters.contactSoftness)
+    public float contactSoftnessThreshold;        // 0..1, normalizedPush below which contactSoftness has no effect
     public float blend;                           // 0..1
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -100,11 +111,14 @@ public struct JiggleTreeInputParameters {
         float angleLimitVal = angleLimitToggle ? angleLimit.Evaluate(t) : 0f;
         float collisionVal = (collisionToggle && adv) ? collisionRadius.Evaluate(t) : 0f;
         float3 collisionOffsetVal = (collisionToggle && adv) ? math.lerp(collisionOffsetStart, collisionOffsetEnd, t) : float3.zero;
-        // Squash only makes sense where collisions are actually resolved, so it shares collisionRadius's gate.
         // Gated on advanced alone, matching where it sits in the inspector (next to stretch, its counterpart).
         // It needs contact to do anything, but there is no need to also gate on collisionToggle: with collision
         // off nothing ever pushes the point, so the squash target stays at identity by itself.
         float squashVal = adv ? squash.Evaluate(t) : 0f;
+        // Gated the same way as squash (advanced only): contactSoftness/Threshold only do anything through the
+        // softening formula in JiggleJobSimulate.GetContactSoftening, which itself only matters where collisions
+        // push the point in the first place.
+        float contactSoftnessVal = adv ? contactSoftness.Evaluate(t) : 0f;
 
         float stiffSq = stiff * stiff;
         float oneMinusStr = 1f - stretchVal;
@@ -127,7 +141,14 @@ public struct JiggleTreeInputParameters {
             airDrag = airVal,
             collisionRadius = collisionVal,
             collisionOffset = collisionOffsetVal,
-            squash = squashVal
+            squash = squashVal,
+            // Passed through rather than gated: it only shapes squash's result, which squash == 0 already makes
+            // inert, the same way contactSoftnessThreshold rides along with contactSoftness.
+            squashBulge = squashBulge,
+            contactSoftness = contactSoftnessVal,
+            // Not gated on adv/curve-evaluated: it's just a pivot point for contactSoftness, and contactSoftness
+            // being 0 already makes it inert, same as how angleLimitSoften passes through unconditionally.
+            contactSoftnessThreshold = contactSoftnessThreshold
         };
     }
 
@@ -143,6 +164,9 @@ public struct JiggleTreeInputParameters {
             gravity = new JiggleTreeCurvedFloat(1f),
             collisionRadius = new JiggleTreeCurvedFloat(0.1f),
             squash = new JiggleTreeCurvedFloat(0f),
+            squashBulge = 1f,
+            contactSoftness = new JiggleTreeCurvedFloat(0f),
+            contactSoftnessThreshold = 0.2f,
             soften = 0f,
             angleLimitSoften = 0f,
             blend = 1f
@@ -159,11 +183,16 @@ public struct JiggleTreeInputParameters {
         airDrag.Ensure01();
         stretch.Ensure01();
         squash.Ensure01();
+        // No upper bound: past 1 the cross-section gains more than the length lost, which is a legitimate look
+        // when the "volume" is a stand-in rather than anything measured off the mesh.
+        squashBulge = Mathf.Max(0f, squashBulge);
+        contactSoftness.Ensure01();
 
         rootStretch = Mathf.Clamp01(rootStretch);
         ignoreRootMotion = Mathf.Clamp01(ignoreRootMotion);
         soften = Mathf.Clamp01(soften);
         angleLimitSoften = Mathf.Clamp01(angleLimitSoften);
+        contactSoftnessThreshold = Mathf.Clamp01(contactSoftnessThreshold);
         blend = Mathf.Clamp01(blend);
     }
 }

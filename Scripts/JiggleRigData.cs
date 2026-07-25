@@ -17,6 +17,11 @@ public struct JiggleTransformCachedData {
     public float lossyScale;
     public Vector3 restLocalPosition;
     public Vector4 restLocalRotation;
+    // Authored local scale, sampled the same way as restLocalPosition/restLocalRotation (never read live from
+    // the bone at simulation time). This matters specifically for scale: squash writes localScale every frame,
+    // so reading it live (as JiggleMemoryBus.AddTreeToSlice used to) would capture squash's own output as the
+    // "rest" value the next time the tree rebuilds, corrupting it further on every subsequent rebuild.
+    public Vector3 restLocalScale;
 }
 
 [Serializable]
@@ -65,6 +70,21 @@ public struct JiggleRigData {
                 }
                 serializedVersion = "v0.0.2";
                 return true;
+            case "v0.0.2":
+                // Rest scale is now serialized on author too (see JiggleTransformCachedData.restLocalScale):
+                // previously it was read live from the bone at simulate time, which squash can overwrite, so
+                // sample it now while this data predates squash and can't yet be corrupted by it. Runs in the
+                // editor (OnValidate), so this always sees an authored value, never a mid-squash one.
+                var scaleLength = transformCachedData.Length;
+                for (int i = 0; i < scaleLength; i++) {
+                    var cachedData = transformCachedData[i];
+                    var t = cachedData.bone;
+                    if (!t) continue;
+                    cachedData.restLocalScale = t.localScale;
+                    transformCachedData[i] = cachedData;
+                }
+                serializedVersion = "v0.0.3";
+                return true;
             default:
                 return false;
         }
@@ -79,6 +99,7 @@ public struct JiggleRigData {
             t.GetLocalPositionAndRotation(out var localPosition, out var localRotation);
             cachedData.restLocalPosition = localPosition;
             cachedData.restLocalRotation = new Vector4(localRotation.x, localRotation.y, localRotation.z, localRotation.w);
+            cachedData.restLocalScale = t.localScale;
             transformCachedData[i] = cachedData;
         }
         RegenerateCacheLookup();
@@ -143,6 +164,7 @@ public struct JiggleRigData {
         ValidateCurve(ref jiggleTreeInputParameters.gravity.curve);
         ValidateCurve(ref jiggleTreeInputParameters.collisionRadius.curve);
         ValidateCurve(ref jiggleTreeInputParameters.squash.curve);
+        ValidateCurve(ref jiggleTreeInputParameters.contactSoftness.curve);
         BuildNormalizedDistanceFromRootList();
         for (int i = 0; i < 100; i++) {
             if (!TryUpdateSerialization()) {
@@ -178,6 +200,7 @@ public struct JiggleRigData {
             bone = t,
             restLocalPosition = localPosition,
             restLocalRotation = new Vector4(localRotation.x, localRotation.y, localRotation.z, localRotation.w),
+            restLocalScale = t.localScale,
             normalizedDistanceFromRoot = currentLength / totalLength,
             lossyScale = (scale.x + scale.y + scale.z)/3f,
         });
@@ -282,7 +305,7 @@ public struct JiggleRigData {
     public static JiggleRigData Default() {
         return new JiggleRigData {
             rootBone = null,
-            serializedVersion = "v0.0.2",
+            serializedVersion = "v0.0.3",
             hasSerializedData = true,
             excludeRoot = false,
             jiggleTreeInputParameters = JiggleTreeInputParameters.Default(),

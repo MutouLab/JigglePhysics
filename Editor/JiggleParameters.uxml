@@ -10,6 +10,9 @@
         <ui:VisualElement name="AdvancedSection" style="flex-grow: 0; flex-shrink: 0;">
             <ui:Instance template="CurvableSlider" name="StretchControl"/>
             <ui:Instance template="CurvableSlider" name="SquashControl"/>
+            <ui:Slider label="Squash Bulge" value="1" high-value="2" name="SquashBulgeSlider" show-input-field="true"/>
+            <ui:Instance template="CurvableSlider" name="ContactSoftnessControl"/>
+            <ui:Slider label="Contact Softness Threshold" value="42" high-value="1" name="ContactSoftnessThresholdSlider" show-input-field="true"/>
             <ui:Slider label="Soften" value="42" high-value="1" name="SoftenSlider" show-input-field="true"/>
             <ui:VisualElement name="RootSection" style="flex-grow: 1;">
                 <ui:Slider label="Root Stretch" value="42" high-value="0.9" name="RootStretchSlider" show-input-field="true"/>

@@ -72,6 +72,23 @@ public struct JiggleJobBulkTransformReset : IJobParallelForTransform {
             default:
                 throw new ArgumentOutOfRangeException(nameof(ChangeFlags), "Unknown ChangeFlags (JiggleJobBulkTransformReset), this should never happen.");
         }
+
+        // Scale has no equivalent to the position/rotation change-detection above: nothing outside the jiggle
+        // system is expected to animate a jiggle bone's scale, so unlike position/rotation there's no external
+        // edit to preserve - always restore the authored rest scale (JiggleTransformCachedData.restLocalScale,
+        // via JiggleTree.restScales) here. This is also what stops squash's own scale writes from being read back
+        // as if they were external changes: squash writes localScale, and this puts it back every reset.
+        var restScale = restTransform.scale;
+        if (IsValidScale(restScale)) {
+            transform.localScale = restScale;
+        }
+    }
+
+    // Shares its criteria with JiggleTree's copy (Vector3-based) and JiggleMemoryBus's (also Vector3-based): a
+    // scale is only trusted if every component is non-zero and finite. A zero/non-finite value would collapse
+    // or corrupt the bone outright, which is worse than simply not touching it this reset.
+    private static bool IsValidScale(float3 scale) {
+        return math.all(scale != float3.zero) && math.all(math.isfinite(scale));
     }
 
 }

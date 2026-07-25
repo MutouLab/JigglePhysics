@@ -93,7 +93,33 @@ public class JiggleTreeInputPropertiesPropertyDrawer : PropertyDrawer {
             "Squash",
             0f,
             1f,
-            "Squash is stretch's counterpart: how much contact with a Jiggle Collider flattens the bone and bulges it perpendicular to the contact, like a marshmallow. It relaxes on the same elasticity Stretch drives. 0 (default) never writes to the bone's scale at all."
+            "Squash is stretch's counterpart: classic squash & stretch driven by this bone's current length versus its rest length, so pressing it straight-on (shortening it) flattens it and bulges it perpendicular to the contact, like a marshmallow. 0 (default) never writes to the bone's scale at all."
+        );
+        SetCurvableSlider(
+            visualElement,
+            property,
+            "ContactSoftnessControl",
+            nameof(JiggleTreeInputParameters.contactSoftness),
+            "Contact Softness",
+            0f,
+            1f,
+            "How much a deep press softens this bone's length/angle elasticity, letting a deliberate push sink in even on a stiff bone. Contact shallower than Contact Softness Threshold leaves elasticity untouched, so light or incidental touches keep their full stiffness. 0 (default) never softens anything."
+        );
+        SetSlider(
+            visualElement,
+            property,
+            "SquashBulgeSlider",
+            nameof(JiggleTreeInputParameters.squashBulge),
+            "Squash Bulge",
+            "How far the cross-section widens for a given amount of length compression. 1 preserves volume, 0 compresses without widening at all, and above 1 widens more than the lost length gives back."
+        );
+        SetSlider(
+            visualElement,
+            property,
+            "ContactSoftnessThresholdSlider",
+            nameof(JiggleTreeInputParameters.contactSoftnessThreshold),
+            "Contact Softness Threshold",
+            "How deep a contact needs to be (relative to Collision Radius) before Contact Softness starts softening elasticity. Below this, stiffness is fully preserved."
         );
         SetCurvableSlider(
             visualElement,

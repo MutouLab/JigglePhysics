@@ -108,7 +108,10 @@ public struct JiggleJobBroadPhase : IJob {
             switch (collider.type) {
                 case JiggleCollider.JiggleColliderType.Capsule: {
                     var up = math.abs(collider.GetWorldAxis());
-                    aabbExtent = up * collider.worldHeight * 0.5f + new float3(collider.worldRadius);
+                    // radiusScale can make any axis (including the caps, along capsuleAxis) wider than worldRadius;
+                    // use the largest component so the AABB stays conservative.
+                    var maxCrossRadius = collider.worldRadius * math.cmax(collider.worldRadiusScale);
+                    aabbExtent = up * collider.worldHeight * 0.5f + new float3(maxCrossRadius);
                     break;
                 }
                 case JiggleCollider.JiggleColliderType.Plane:

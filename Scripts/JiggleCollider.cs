@@ -8,6 +8,11 @@ namespace GatorDragonGames.JigglePhysics {
 [Serializable]
 public struct JiggleColliderSerializable {
     public Transform transform;
+
+    [Tooltip("Capsule only: when set, the capsule runs from this collider's placement (start) to this " +
+        "Transform (end), tracking it every frame, and Height is ignored. End Radius / End Offset still " +
+        "apply at that end.")]
+    public Transform endTransform;
     public JiggleCollider collider;
 
     // overrideTransform lets a caller pass the transform it will actually place this collider by, so the gizmo
@@ -18,6 +23,14 @@ public struct JiggleColliderSerializable {
             return;
         }
         collider.Read(placement);
+        if (endTransform != null && collider.type == JiggleCollider.JiggleColliderType.Capsule) {
+            collider.hasEndTransform = true;
+            collider.worldEndPosition = endTransform.position;
+        } else {
+            // This struct lives on the component between gizmo calls, so clear the flag rather than let a
+            // stale endpoint linger after the field is emptied in the inspector.
+            collider.hasEndTransform = false;
+        }
         var position = (Vector3)collider.localToWorldMatrix.c3.xyz;
         Gizmos.color = new Color(0.1254902f, 0.7607843f, 0.7215686f, 1f);
         switch (collider.type) {
@@ -157,6 +170,13 @@ public struct JiggleCollider {
     public float3 startOffset;
     public float3 endOffset;
 
+    // Capsule-only runtime state: when hasEndTransform is set (authored via JiggleColliderSerializable's
+    // endTransform), the segment's far endpoint is worldEndPosition instead of the Height/Axis-derived one.
+    // Fed once per Simulate from the main thread (JiggleMemoryBus.WriteColliderEndpointPositions); Read()
+    // deliberately leaves both fields untouched so the collider read job's read-modify-write cannot lose them.
+    [NonSerialized] public bool hasEndTransform;
+    [NonSerialized] public float3 worldEndPosition;
+
     [NonSerialized] public float4x4 localToWorldMatrix;
     private float AverageScale(float4x4 matrix) {
         float sx = math.length(matrix.c0.xyz);
@@ -185,9 +205,18 @@ public struct JiggleCollider {
     // Single source of truth for the capsule's world-space segment endpoints. startOffset/endOffset are
     // transformed as directions (no translation), so they move the endpoints in the collider's local space
     // regardless of where positionOffset/localToWorldMatrix places the collider's center. With both offsets
-    // zero this reduces exactly to center +/- GetWorldAxis() * (worldHeight * 0.5f).
+    // zero this reduces exactly to center +/- GetWorldAxis() * (worldHeight * 0.5f). When hasEndTransform is
+    // set, this Height/Axis-derived formula is bypassed entirely in favor of the two-bone branch below.
     public void GetWorldCapsuleSegment(out float3 a, out float3 b) {
         var center = localToWorldMatrix.c3.xyz;
+        if (hasEndTransform) {
+            // Two-bone mode: the start cap sits at the collider's own placement and the end cap follows the
+            // end Transform, so Height/Axis no longer define the segment. Both offsets stay in the start
+            // transform's local space, consistent with the cross-section axes (a known limitation).
+            a = center + math.mul(localToWorldMatrix, new float4(startOffset, 0f)).xyz;
+            b = worldEndPosition + math.mul(localToWorldMatrix, new float4(endOffset, 0f)).xyz;
+            return;
+        }
         var axisDir = GetWorldAxis();
         var halfHeight = worldHeight * 0.5f;
         a = center - axisDir * halfHeight + math.mul(localToWorldMatrix, new float4(startOffset, 0f)).xyz;

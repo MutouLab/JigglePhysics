@@ -16,6 +16,7 @@ public static class JigglePhysics {
     private static readonly List<JigglePointParameters> tempParameters = new ();
     private static readonly List<JiggleCollider> tempColliders = new ();
     private static readonly List<Transform> tempColliderTransforms = new ();
+    private static readonly List<Transform> tempColliderEndTransforms = new ();
     private static List<JiggleTreeSegment> rootJiggleTreeSegments;
     private static bool initializedRendering = false;
     private static int skips = 0;
@@ -238,6 +239,7 @@ public static class JigglePhysics {
         tempRestLocalScales.Clear();
         jiggleRig.GetJiggleColliders(tempColliders);
         jiggleRig.GetJiggleColliderTransforms(tempColliderTransforms);
+        jiggleRig.GetJiggleColliderEndTransforms(tempColliderEndTransforms);
         if (!jiggleRig.GetCacheIsValid()) jiggleRig.BuildNormalizedDistanceFromRootList();
         var backProjection = Vector3.zero;
         var backProjectionChildCount = jiggleRig.GetValidChildrenCount(jiggleRig.rootBone);
@@ -275,10 +277,10 @@ public static class JigglePhysics {
 
         Profiler.EndSample();
         if (tree != null) {
-            tree.Set(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales);
+            tree.Set(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliderEndTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales);
             return tree;
         } else {
-            return new JiggleTree(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales);
+            return new JiggleTree(tempTransforms, tempPoints, tempParameters, tempColliderTransforms, tempColliderEndTransforms, tempColliders, tempRestLocalPositions, tempRestLocalRotations, tempRestLocalScales);
         }
     }
 

@@ -1,3 +1,4 @@
+using System;
 using UnityEditor;
 using UnityEngine;
 
@@ -10,6 +11,20 @@ public class JiggleColliderPropertyDrawer : PropertyDrawer {
     private static readonly GUIContent EndRadiusLabel = new GUIContent("End Radius", "Radius at the end endpoint (the one End Offset moves), per local X/Y/Z axis. Interpolating from Start Radius approximates a tapered capsule. Any component left at 0 falls back to Radius.");
     private static readonly GUIContent StartOffsetLabel = new GUIContent("Start Offset", "Local-space offset applied to the capsule's start point, independent of Height/Axis.");
     private static readonly GUIContent EndOffsetLabel = new GUIContent("End Offset", "Local-space offset applied to the capsule's end point, independent of Height/Axis.");
+
+    // The drawer only receives the JiggleCollider child, but two-bone mode is authored on the wrapping
+    // JiggleColliderSerializable's endTransform. Resolve the sibling by rewriting the property path; if the
+    // collider is embedded some other way (no ".collider" tail) fall back to "no end transform", so the
+    // drawer degrades to showing every field rather than hiding one that is actually read.
+    private static bool GetHasEndTransform(SerializedProperty colliderProp) {
+        var path = colliderProp.propertyPath;
+        if (!path.EndsWith(".collider", StringComparison.Ordinal)) {
+            return false;
+        }
+        var endTransformPath = path.Substring(0, path.Length - ".collider".Length) + ".endTransform";
+        var endTransformProp = colliderProp.serializedObject.FindProperty(endTransformPath);
+        return endTransformProp != null && endTransformProp.objectReferenceValue != null;
+    }
 
     public override float GetPropertyHeight(SerializedProperty property, GUIContent label) {
         var typeProp = property.FindPropertyRelative("type");
@@ -25,7 +40,10 @@ public class JiggleColliderPropertyDrawer : PropertyDrawer {
                 break;
             case JiggleCollider.JiggleColliderType.Capsule:
                 // No Radius row: a capsule's size lives entirely in the per-end radii below.
-                height += (EditorGUIUtility.singleLineHeight + spacing) * 2f; // height, capsuleAxis
+                // No Height row in two-bone mode either: the end Transform defines the segment, so Height is
+                // not read (see GetWorldCapsuleSegment), same principle as hiding Radius.
+                var lineCount = GetHasEndTransform(property) ? 1f : 2f; // (height,) capsuleAxis
+                height += (EditorGUIUtility.singleLineHeight + spacing) * lineCount;
                 height += EditorGUI.GetPropertyHeight(property.FindPropertyRelative("startRadius")) + spacing;
                 height += EditorGUI.GetPropertyHeight(property.FindPropertyRelative("endRadius")) + spacing;
                 height += EditorGUI.GetPropertyHeight(property.FindPropertyRelative("startOffset")) + spacing;
@@ -62,7 +80,9 @@ public class JiggleColliderPropertyDrawer : PropertyDrawer {
             case JiggleCollider.JiggleColliderType.Capsule:
                 // Radius is not drawn: it only seeds the per-end radii below (and covers colliders serialized
                 // before they existed), so showing it would imply a size control that nothing reads.
-                DrawClampedFloat(ref rect, heightProp, "Height");
+                if (!GetHasEndTransform(property)) {
+                    DrawClampedFloat(ref rect, heightProp, "Height");
+                }
                 DrawSingleLine(ref rect, capsuleAxisProp, new GUIContent("Axis"));
                 // Start* and End* are kept adjacent so it is obvious which endpoint each field drives.
                 SeedUnsetRadius(startRadiusProp, radiusProp);
@@ -128,6 +148,60 @@ public class JiggleColliderPropertyDrawer : PropertyDrawer {
         rect.y += rect.height + EditorGUIUtility.standardVerticalSpacing;
     }
 
+}
+
+// Draws the wrapper so endTransform only appears for capsules: on a sphere or plane the field is never read,
+// and the precedent here is to hide controls that nothing reads (see the Radius/Height handling above).
+[CustomPropertyDrawer(typeof(JiggleColliderSerializable))]
+public class JiggleColliderSerializablePropertyDrawer : PropertyDrawer {
+    private static readonly GUIContent EndTransformLabel = new GUIContent("End Transform",
+        "Capsule only: when set, the capsule runs from this collider's placement (start) to this Transform " +
+        "(end), tracking it every frame, and Height is ignored. End Radius / End Offset still apply at that end.");
+
+    private static bool GetIsCapsule(SerializedProperty property) {
+        var typeProp = property.FindPropertyRelative("collider").FindPropertyRelative("type");
+        return (JiggleCollider.JiggleColliderType)typeProp.enumValueIndex == JiggleCollider.JiggleColliderType.Capsule;
+    }
+
+    public override float GetPropertyHeight(SerializedProperty property, GUIContent label) {
+        var height = EditorGUIUtility.singleLineHeight;
+        if (!property.isExpanded) {
+            return height;
+        }
+        var spacing = EditorGUIUtility.standardVerticalSpacing;
+        height += spacing + EditorGUI.GetPropertyHeight(property.FindPropertyRelative("transform"));
+        if (GetIsCapsule(property)) {
+            height += spacing + EditorGUI.GetPropertyHeight(property.FindPropertyRelative("endTransform"));
+        }
+        height += spacing + EditorGUI.GetPropertyHeight(property.FindPropertyRelative("collider"));
+        return height;
+    }
+
+    public override void OnGUI(Rect position, SerializedProperty property, GUIContent label) {
+        EditorGUI.BeginProperty(position, label, property);
+        var rect = new Rect(position.x, position.y, position.width, EditorGUIUtility.singleLineHeight);
+        property.isExpanded = EditorGUI.Foldout(rect, property.isExpanded, label, true);
+        if (property.isExpanded) {
+            var spacing = EditorGUIUtility.standardVerticalSpacing;
+            rect.y += rect.height + spacing;
+            EditorGUI.indentLevel++;
+            var transformProp = property.FindPropertyRelative("transform");
+            rect.height = EditorGUI.GetPropertyHeight(transformProp);
+            EditorGUI.PropertyField(rect, transformProp);
+            rect.y += rect.height + spacing;
+            if (GetIsCapsule(property)) {
+                var endTransformProp = property.FindPropertyRelative("endTransform");
+                rect.height = EditorGUI.GetPropertyHeight(endTransformProp);
+                EditorGUI.PropertyField(rect, endTransformProp, EndTransformLabel);
+                rect.y += rect.height + spacing;
+            }
+            var colliderProp = property.FindPropertyRelative("collider");
+            rect.height = EditorGUI.GetPropertyHeight(colliderProp);
+            EditorGUI.PropertyField(rect, colliderProp);
+            EditorGUI.indentLevel--;
+        }
+        EditorGUI.EndProperty();
+    }
 }
 
 }

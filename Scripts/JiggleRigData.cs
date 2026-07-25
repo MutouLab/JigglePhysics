@@ -135,8 +135,9 @@ public struct JiggleRigData {
     }
     
     // Must stay index-for-index with GetJiggleColliderTransforms: JiggleTree pairs personalColliders[i] with
-    // personalColliderTransforms[i] (see JiggleMemoryBus's TransformAccessArray population), so both methods
-    // skip exactly the same (null/destroyed) reference slots, in the same order, over the same source array.
+    // personalColliderTransforms[i] (see JiggleMemoryBus's TransformAccessArray population), so all three
+    // methods (including GetJiggleColliderEndTransforms) skip exactly the same (null/destroyed) reference
+    // slots, in the same order, over the same source array.
     public void GetJiggleColliders(List<JiggleCollider> colliders) {
         colliders.Clear();
         var count = jiggleColliders.Length;
@@ -247,7 +248,19 @@ public struct JiggleRigData {
             colliderTransforms.Add(reference.ResolvedTransform);
         }
     }
-    
+
+    // See the index-correspondence note on GetJiggleColliders. A referenced collider with no end transform
+    // contributes a null entry here (not skipped): the list must stay index-for-index with the other two.
+    public void GetJiggleColliderEndTransforms(List<Transform> colliderEndTransforms) {
+        colliderEndTransforms.Clear();
+        var count = jiggleColliders.Length;
+        for(int i=0;i<count;i++) {
+            var reference = jiggleColliders[i];
+            if (reference == null) continue;
+            colliderEndTransforms.Add(reference.Collider.endTransform);
+        }
+    }
+
     public bool GetHasRootTransformError() => !rootBone;
     public bool GetCacheIsValid() {
         if (transformCachedData is not { Length: > 0 } || transformToCachedDataMap == null || transformToCachedDataMap.Count != transformCachedData.Length) {

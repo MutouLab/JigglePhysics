@@ -209,6 +209,11 @@ public class JiggleJobs {
         _memoryBus.CommitTrees();
         _memoryBus.CommitColliders();
 
+        // Must sit exactly here: after the commits (whose whole-struct copies reset endpoint state) and
+        // before any of this frame's jobs are scheduled. See WriteColliderEndpointPositions for the full
+        // safety argument.
+        _memoryBus.WriteColliderEndpointPositions();
+
         jobSimulate.UpdateArrays(_memoryBus);
         jobSimulate.timeIncrements = timeIncrements;
         jobBulkTransformReset.UpdateArrays(_memoryBus);

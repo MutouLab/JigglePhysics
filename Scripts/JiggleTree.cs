@@ -13,6 +13,9 @@ public class JiggleTree {
     public Vector3[] restScales;
     public JigglePointParameters[] parameters;
     public Transform[] personalColliderTransforms;
+    // Per-collider capsule end bones, parallel to personalColliders/personalColliderTransforms (null = the
+    // collider has no authored end transform).
+    public Transform[] personalColliderEndTransforms;
     public JiggleCollider[] personalColliders;
 
     public event System.Action<JiggleTree> dirtied;
@@ -104,7 +107,7 @@ public class JiggleTree {
         jiggleTreeJobData.transformIndexOffset = (uint)offset;
     }
 
-    public JiggleTree(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations, List<Vector3> restScales) {
+    public JiggleTree(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<Transform> personalColliderEndTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations, List<Vector3> restScales) {
         dirty = false;
         this.bones = bones.ToArray();
         this.restPositions = restPositions.ToArray();
@@ -114,6 +117,7 @@ public class JiggleTree {
         this.parameters = parameters.ToArray();
         this.personalColliders = personalColliders.ToArray();
         this.personalColliderTransforms = personalColliderTransforms.ToArray();
+        this.personalColliderEndTransforms = personalColliderEndTransforms.ToArray();
 #if UNITY_6000_4_OR_NEWER
         rootID = bones[0].GetEntityId();
 #else
@@ -121,7 +125,7 @@ public class JiggleTree {
 #endif
     }
 
-    public void Set(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations, List<Vector3> restScales) {
+    public void Set(List<Transform> bones, List<JiggleSimulatedPoint> points, List<JigglePointParameters> parameters, List<Transform> personalColliderTransforms, List<Transform> personalColliderEndTransforms, List<JiggleCollider> personalColliders, List<Vector3> restPositions, List<Quaternion> restRotations, List<Vector3> restScales) {
         var bonesCount = bones.Count;
         var pointsCount = points.Count;
         if (bonesCount == this.bones.Length && pointsCount == this.points.Length) {
@@ -142,12 +146,14 @@ public class JiggleTree {
 
         var personalColliderTransformsCount = personalColliderTransforms.Count;
         var personalCollidersCount = personalColliders.Count;
-        if (personalCollidersCount == this.personalColliders.Length && personalColliderTransformsCount == this.personalColliderTransforms.Length) {
+        if (personalCollidersCount == this.personalColliders.Length && personalColliderTransformsCount == this.personalColliderTransforms.Length && personalColliderEndTransforms.Count == this.personalColliderEndTransforms.Length) {
             personalColliders.CopyTo(this.personalColliders);
             personalColliderTransforms.CopyTo(this.personalColliderTransforms);
+            personalColliderEndTransforms.CopyTo(this.personalColliderEndTransforms);
         } else {
             this.personalColliders = personalColliders.ToArray();
             this.personalColliderTransforms = personalColliderTransforms.ToArray();
+            this.personalColliderEndTransforms = personalColliderEndTransforms.ToArray();
         }
 
 #if UNITY_6000_4_OR_NEWER

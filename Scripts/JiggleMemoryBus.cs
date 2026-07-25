@@ -106,6 +106,16 @@ public class JiggleMemoryBus {
     private List<JiggleColliderSerializable> pendingSceneColliderAdd;
     private List<JiggleColliderSerializable> pendingSceneColliderRemove;
 
+    // A collider slot (in personalColliders/sceneColliders index space) whose capsule end point follows a
+    // Transform. Compact: only authored endpoints are listed, so scenes without two-bone capsules pay a
+    // single Count check per Simulate.
+    private struct ColliderEndpoint {
+        public int index;
+        public Transform transform;
+    }
+    private List<ColliderEndpoint> personalColliderEndpoints;
+    private List<ColliderEndpoint> sceneColliderEndpoints;
+
     private bool hasWrittenData = false;
 
     private int preTransformCount;
@@ -336,7 +346,9 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
         pendingSceneColliderRemove = new();
         pendingAddTrees = new();
         pendingRemoveTrees = new();
-        
+        personalColliderEndpoints = new();
+        sceneColliderEndpoints = new();
+
         memoryFragmenter = new JiggleMemoryFragmenter(4096);
         personalColliderMemoryFragmenter = new JiggleMemoryFragmenter(2048);
         sceneColliderMemoryFragmenter = new JiggleMemoryFragmenter(2048);
@@ -467,7 +479,19 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
             for (int j = (int)removedTree.colliderIndexOffset; j < removedTree.colliderIndexOffset + removedTree.colliderCount; j++) {
                 personalColliderTransformAccessList[j] = GetDummyTransform(j);
             }
+            RemoveEndpointsInRange(personalColliderEndpoints, (int)removedTree.colliderIndexOffset, (int)removedTree.colliderCount);
             break;
+        }
+    }
+
+    // The personal collider fragmenter never frees slots (upstream behavior), so this range sweep is what
+    // keeps the endpoint lists from accumulating entries for removed trees/colliders.
+    private static void RemoveEndpointsInRange(List<ColliderEndpoint> endpoints, int start, int count) {
+        for (int i = endpoints.Count - 1; i >= 0; i--) {
+            var index = endpoints[i].index;
+            if (index >= start && index < start + count) {
+                endpoints.RemoveAt(i);
+            }
         }
     }
 
@@ -540,8 +564,18 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
             for (int i = 0; i < jiggleTreeJobData.colliderCount; i++) {
                 var collider = jiggleTree.personalColliders[i];
                 collider.enabled = true;
+                // Like enabled, hasEndTransform is runtime state and must start clean: the gizmo path mutates
+                // the serialized struct in place, so the authored copy can arrive with a stale true, and a slot
+                // without a registered endpoint would keep that garbage worldEndPosition forever (nothing ever
+                // overwrites it). WriteColliderEndpointPositions re-asserts true for registered endpoints.
+                collider.hasEndTransform = false;
                 personalColliderArray[colliderStartIndex + i] = collider;
                 personalColliderTransformAccessList[colliderStartIndex + i] = jiggleTree.personalColliderTransforms[i];
+
+                var endTransform = jiggleTree.personalColliderEndTransforms[i];
+                if (endTransform != null && collider.type == JiggleCollider.JiggleColliderType.Capsule) {
+                    personalColliderEndpoints.Add(new ColliderEndpoint { index = colliderStartIndex + i, transform = endTransform });
+                }
             }
 
             personalColliderCount = personalColliderMemoryFragmenter.GetHighestAllocatedIndex()+1;
@@ -657,6 +691,7 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
                     sceneCollider.enabled = false;
                     sceneColliderArray[id] = sceneCollider;
                     sceneColliderTransformAccessList[id] = GetDummyTransform(id);
+                    RemoveEndpointsInRange(sceneColliderEndpoints, id, 1);
                 }
             }
             pendingSceneColliderRemove.Clear();
@@ -664,7 +699,10 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
             for (int i = 0; i < pendingAddSceneColliderCount; i++) {
                 var collider = pendingSceneColliderAdd[i];
                 collider.collider.enabled = true;
-                
+                // Runtime state starts clean, same reasoning as the personal collider path in
+                // TryAddTransformsToSlice: the authored struct can carry a stale hasEndTransform.
+                collider.collider.hasEndTransform = false;
+
                 var found = sceneColliderMemoryFragmenter.TryAllocate(1, out var index);
                 if (!found) {
                     throw new UnityException( "Ran out of scene collider memory, this is a bug please report it! (It should've been allocated in advance");
@@ -675,6 +713,9 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
                 }
                 sceneColliderTransformAccessList[index] = collider.transform;
                 sceneColliderArray[index] = collider.collider;
+                if (collider.endTransform != null && collider.collider.type == JiggleCollider.JiggleColliderType.Capsule) {
+                    sceneColliderEndpoints.Add(new ColliderEndpoint { index = index, transform = collider.endTransform });
+                }
                 sceneColliderCount = math.max(index+1, sceneColliderCount);
             }
 
@@ -687,6 +728,45 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
             NativeArray<JiggleCollider>.Copy(sceneColliderArray, sceneColliders, sceneColliderCount);
             doubleBufferSceneColliderTransformAccessArray.Flip();
             commitSceneColliderState = CommitState.Idle;
+        }
+    }
+
+    // Writes each authored capsule end point (the world position of its end Transform) into the collider
+    // arrays. These are main-thread NativeArray writes, so the caller must guarantee no scheduled-but-
+    // incomplete job references the arrays. JiggleJobs.Simulate satisfies this by calling it after
+    // handleSimulate.Complete() — the prior frame's collider read, broad phase and simulate handles all
+    // chain into that handle — and before scheduling any of this frame's jobs. The debug-render path
+    // (JiggleRenderer) also reads these arrays, which is safe as long as ScheduleRender/CompleteRender are
+    // paired within a frame, before the next Simulate.
+    // Ordering within Simulate matters as well: WriteOut and CommitColliders whole-struct-copy from the
+    // managed arrays, where hasEndTransform is always false, so this must run after Commit* — each frame
+    // re-establishes endpoint state on top of whatever the commits rewrote. The collider read job then
+    // preserves it, because JiggleCollider.Read never touches the endpoint fields.
+    public void WriteColliderEndpointPositions() {
+        WriteEndpoints(personalColliderEndpoints, personalColliders);
+        WriteEndpoints(sceneColliderEndpoints, sceneColliders);
+    }
+
+    private static void WriteEndpoints(List<ColliderEndpoint> endpoints, NativeArray<JiggleCollider> colliders) {
+        var count = endpoints.Count;
+        if (count == 0) {
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            var endpoint = endpoints[i];
+            var collider = colliders[endpoint.index];
+            if (endpoint.transform == null) {
+                // End bone destroyed mid-play: degrade deterministically to the Height/Axis capsule rather
+                // than freezing a stale endpoint. The entry itself is removed when its tree/collider is.
+                if (collider.hasEndTransform) {
+                    collider.hasEndTransform = false;
+                    colliders[endpoint.index] = collider;
+                }
+                continue;
+            }
+            collider.hasEndTransform = true;
+            collider.worldEndPosition = endpoint.transform.position;
+            colliders[endpoint.index] = collider;
         }
     }
 

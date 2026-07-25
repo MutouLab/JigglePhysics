@@ -28,7 +28,13 @@ public struct JiggleRigData {
     [SerializeField] public JiggleTreeInputParameters jiggleTreeInputParameters;
     [SerializeField] public Transform[] excludedTransforms;
     [SerializeField, HideInInspector] public JiggleTransformCachedData[] transformCachedData;
-    [SerializeField] public JiggleColliderSerializable[] jiggleColliders;
+    // References to JiggleColliderExample components placed in the scene (VRC PhysBone-Collider-style), rather
+    // than inline collider definitions. This makes personal collisions opt-in per rig: a rig only collides
+    // against colliders it explicitly references here, instead of every rig colliding against every scene
+    // collider (which caused self-collision "explosions" for colliders shared between mirrored rigs, e.g. two
+    // breasts colliding with each other's own rig). See JiggleColliderExample.affectsAllRigs for the opposite,
+    // global-collider behavior.
+    [SerializeField] public JiggleColliderExample[] jiggleColliders;
     
     [NonSerialized]
     private Dictionary<Transform, JiggleTransformCachedData> transformToCachedDataMap;
@@ -107,11 +113,16 @@ public struct JiggleRigData {
         return false;
     }
     
+    // Must stay index-for-index with GetJiggleColliderTransforms: JiggleTree pairs personalColliders[i] with
+    // personalColliderTransforms[i] (see JiggleMemoryBus's TransformAccessArray population), so both methods
+    // skip exactly the same (null/destroyed) reference slots, in the same order, over the same source array.
     public void GetJiggleColliders(List<JiggleCollider> colliders) {
         colliders.Clear();
         var count = jiggleColliders.Length;
         for(int i=0;i<count;i++) {
-            colliders.Add(jiggleColliders[i].collider);
+            var reference = jiggleColliders[i];
+            if (reference == null) continue;
+            colliders.Add(reference.Collider.collider);
         }
     }
 
@@ -202,11 +213,14 @@ public struct JiggleRigData {
         return null;
     }
     
+    // See the index-correspondence note on GetJiggleColliders.
     public void GetJiggleColliderTransforms(List<Transform> colliderTransforms) {
         colliderTransforms.Clear();
         var count = jiggleColliders.Length;
         for(int i=0;i<count;i++) {
-            colliderTransforms.Add(jiggleColliders[i].transform);
+            var reference = jiggleColliders[i];
+            if (reference == null) continue;
+            colliderTransforms.Add(reference.ResolvedTransform);
         }
     }
     
@@ -273,18 +287,15 @@ public struct JiggleRigData {
             jiggleTreeInputParameters = JiggleTreeInputParameters.Default(),
             excludedTransforms = Array.Empty<Transform>(),
             transformCachedData = Array.Empty<JiggleTransformCachedData>(),
-            jiggleColliders = Array.Empty<JiggleColliderSerializable>() 
+            jiggleColliders = Array.Empty<JiggleColliderExample>()
         };
     }
 
     public void OnDrawGizmosSelected() {
-        if (jiggleColliders != null) {
-            var count = jiggleColliders.Length;
-            for(int i=0;i<count;i++) {
-                jiggleColliders[i].OnDrawGizmosSelected();
-            }
-        }
-        
+        // Referenced colliders are no longer drawn from here: JiggleColliderExample.OnDrawGizmos() already draws
+        // its own shape unconditionally (not selection-gated), so looping over jiggleColliders here as well would
+        // just double them up whenever this rig happens to be selected.
+
         if (!rootBone) return;
         Gizmos.color = new Color(0.9607844f, 0.9607844f, 0.9607844f, 1f);
         var jiggleTree = JigglePhysics.CreateJiggleTree(this, null);

@@ -10,13 +10,16 @@ public struct JiggleColliderSerializable {
     public Transform transform;
     public JiggleCollider collider;
 
-    public void OnDrawGizmosSelected() {
-        if (transform == null) {
+    // overrideTransform lets a caller pass the transform it will actually place this collider by, so the gizmo
+    // cannot disagree with the collision data when the explicit transform slot is left empty.
+    public void OnDrawGizmosSelected(Transform overrideTransform = null) {
+        var placement = transform != null ? transform : overrideTransform;
+        if (placement == null) {
             return;
         }
-        collider.Read(transform);
+        collider.Read(placement);
         var position = (Vector3)collider.localToWorldMatrix.c3.xyz;
-        Gizmos.color = new Color(0.854902f, 0.6470588f, 0.1254902f, 1f);
+        Gizmos.color = new Color(0.1254902f, 0.7607843f, 0.7215686f, 1f);
         switch (collider.type) {
             case JiggleCollider.JiggleColliderType.Sphere: {
                 var r = collider.worldRadius;

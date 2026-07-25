@@ -107,11 +107,14 @@ public struct JiggleJobBroadPhase : IJob {
             float3 aabbExtent;
             switch (collider.type) {
                 case JiggleCollider.JiggleColliderType.Capsule: {
-                    var up = math.abs(collider.GetWorldAxis());
-                    // radiusScale can make any axis (including the caps, along capsuleAxis) wider than worldRadius;
-                    // use the largest component so the AABB stays conservative.
-                    var maxCrossRadius = collider.worldRadius * math.cmax(collider.worldRadiusScale);
-                    aabbExtent = up * collider.worldHeight * 0.5f + new float3(maxCrossRadius);
+                    // startOffset/endOffset can move the segment (and thus its midpoint) away from
+                    // localToWorldMatrix.c3.xyz, so the AABB has to be built from the actual segment.
+                    collider.GetWorldCapsuleSegment(out var segA, out var segB);
+                    position = (segA + segB) * 0.5f;
+                    // Each end carries its own per-axis radii; take the largest of all six so the AABB stays
+                    // conservative no matter how the capsule is shaped or tapered.
+                    var maxRadius = math.cmax(math.max(collider.worldStartRadius, collider.worldEndRadius));
+                    aabbExtent = math.abs(segB - segA) * 0.5f + new float3(maxRadius);
                     break;
                 }
                 case JiggleCollider.JiggleColliderType.Plane:

@@ -227,18 +227,17 @@ public struct JiggleJobSimulate : IJobFor {
             }
             case JiggleCollider.JiggleColliderType.Capsule: {
                 var hardness = 1f;
-                var colliderPosition = collider.localToWorldMatrix.c3.xyz;
-                var colliderUp = collider.GetWorldAxis();
-                var halfHeight = collider.worldHeight * 0.5f;
-                var capsuleA = colliderPosition - colliderUp * halfHeight;
-                var capsuleB = colliderPosition + colliderUp * halfHeight;
+                collider.GetWorldCapsuleSegment(out var capsuleA, out var capsuleB);
+                var capsuleSegment = capsuleB - capsuleA;
+                var capsuleSegmentLengthSq = math.lengthsq(capsuleSegment);
                 var pointPosition = point->workingPosition;
                 var otherPosition = otherPoint->workingPosition;
                 var pointRadius = point->worldRadius;
                 // Find closest points between capsule axis and bone segment
                 ClosestPointsOnTwoSegments(capsuleA, capsuleB, pointPosition, otherPosition, out var closestOnCapsule, out var closestOnBone, out var tValueBone);
                 var cap_diff = closestOnBone - closestOnCapsule;
-                var cap_combinedRadius = pointRadius + GetEllipseColliderRadius(collider, cap_diff);
+                var cap_radii = GetCapsuleRadii(collider, closestOnCapsule, capsuleA, capsuleSegment, capsuleSegmentLengthSq);
+                var cap_combinedRadius = pointRadius + GetEllipseColliderRadius(collider, cap_diff, cap_radii);
                 var cap_distance = math.length(cap_diff);
                 var cap_depenetrationMagnitude = cap_combinedRadius - cap_distance;
                 if (cap_depenetrationMagnitude <= 0f) {
@@ -251,7 +250,8 @@ public struct JiggleJobSimulate : IJobFor {
                 // Point-to-capsule direct check
                 ClosestPointOnSegment(pointPosition, capsuleA, capsuleB, out var closestOnCapsuleToPoint);
                 cap_diff = pointPosition - closestOnCapsuleToPoint;
-                cap_combinedRadius = pointRadius + GetEllipseColliderRadius(collider, cap_diff);
+                cap_radii = GetCapsuleRadii(collider, closestOnCapsuleToPoint, capsuleA, capsuleSegment, capsuleSegmentLengthSq);
+                cap_combinedRadius = pointRadius + GetEllipseColliderRadius(collider, cap_diff, cap_radii);
                 cap_distance = math.length(cap_diff);
                 cap_depenetrationMagnitude = cap_combinedRadius - cap_distance;
                 if (cap_depenetrationMagnitude > 0f) {
@@ -292,20 +292,17 @@ public struct JiggleJobSimulate : IJobFor {
         return new float3(0f, 0f, 0f);
     }
 
-    // Returns the capsule's radius in the direction of `diff` (a full 3D direction, not just the cross-section),
-    // accounting for radiusScale on all three local axes. This makes the caps ellipsoidal too: the axis-aligned
-    // component of radiusScale scales how far the caps extend along capsuleAxis. Analytic solve, no iteration.
-    // When worldRadiusScale is uniform (including the default (1,1,1)), this returns exactly collider.worldRadius,
-    // preserving legacy circular-capsule behavior.
-    private float GetEllipseColliderRadius(JiggleCollider collider, float3 diff) {
-        var worldRadius = collider.worldRadius;
-        if (worldRadius <= 0f) {
+    // Returns the collider's radius in the direction of `diff` (a full 3D direction, not just the cross-section)
+    // for an ellipsoid whose semi-axes are `radii`, given per local X/Y/Z axis. Analytic solve, no iteration.
+    // When the three radii are equal - including a capsule with no per-axis shaping - this returns that radius
+    // exactly, preserving legacy circular-capsule behavior.
+    private float GetEllipseColliderRadius(JiggleCollider collider, float3 diff, float3 radii) {
+        var rx = radii.x;
+        var ry = radii.y;
+        var rz = radii.z;
+        if (rx <= 0f) {
             return 0f;
         }
-        var rs = collider.worldRadiusScale;
-        var rx = worldRadius * rs.x;
-        var ry = worldRadius * rs.y;
-        var rz = worldRadius * rs.z;
         if (rx == ry && ry == rz) {
             return rx;
         }
@@ -321,6 +318,14 @@ public struct JiggleJobSimulate : IJobFor {
         var c = math.dot(diff, zAxis) / diffLen;
         var denom = (a * a) / (rx * rx) + (b * b) / (ry * ry) + (c * c) / (rz * rz);
         return math.sqrt(1f / denom);
+    }
+
+    // Returns the per-axis radii at `closest` (a point on the capsule's a-b segment) by interpolating between
+    // the two end radii along the segment parameter t. This is an approximation, not a true tapered-capsule
+    // (frustum) SDF: see the comment on JiggleCollider.startRadius.
+    private float3 GetCapsuleRadii(JiggleCollider collider, float3 closest, float3 segA, float3 segVec, float segLengthSq) {
+        var t = segLengthSq < 1e-12f ? 0f : math.saturate(math.dot(closest - segA, segVec) / segLengthSq);
+        return math.lerp(collider.worldStartRadius, collider.worldEndRadius, t);
     }
 
     private void ClosestPointOnSegment(float3 point, float3 segA, float3 segB, out float3 closest) {

@@ -30,46 +30,60 @@ public struct JiggleColliderSerializable {
             }
             break;
             case JiggleCollider.JiggleColliderType.Capsule: {
-                var axisDir = (Vector3)collider.GetWorldAxis();
+                collider.GetWorldCapsuleSegment(out var segA, out var segB);
+                var a = (Vector3)segA;
+                var b = (Vector3)segB;
+                var segVec = b - a;
+                // Follow the actual (possibly offset-tilted) segment direction rather than capsuleAxis, so the
+                // gizmo tracks startOffset/endOffset. Falls back to capsuleAxis when the segment degenerates.
+                var axisDir = segVec.sqrMagnitude > 1e-12f ? segVec.normalized : (Vector3)collider.GetWorldAxis();
                 collider.GetWorldAxes(out var xAxis, out var yAxis, out var zAxis);
                 float3 uAxis, vAxis;
-                float ruScale, rvScale, axisScale;
+                // Per-axis radii at each end, picked out by which local axis the capsule runs along.
+                var startR = collider.worldStartRadius;
+                var endR = collider.worldEndRadius;
+                float ruStart, rvStart, rAxisStart;
+                float ruEnd, rvEnd, rAxisEnd;
                 switch (collider.capsuleAxis) {
                     case JiggleCollider.CapsuleAxis.X:
                         uAxis = yAxis; vAxis = zAxis;
-                        ruScale = collider.worldRadiusScale.y; rvScale = collider.worldRadiusScale.z; axisScale = collider.worldRadiusScale.x;
+                        ruStart = startR.y; rvStart = startR.z; rAxisStart = startR.x;
+                        ruEnd = endR.y; rvEnd = endR.z; rAxisEnd = endR.x;
                         break;
                     case JiggleCollider.CapsuleAxis.Y:
                         uAxis = xAxis; vAxis = zAxis;
-                        ruScale = collider.worldRadiusScale.x; rvScale = collider.worldRadiusScale.z; axisScale = collider.worldRadiusScale.y;
+                        ruStart = startR.x; rvStart = startR.z; rAxisStart = startR.y;
+                        ruEnd = endR.x; rvEnd = endR.z; rAxisEnd = endR.y;
                         break;
                     default: // Z
                         uAxis = xAxis; vAxis = yAxis;
-                        ruScale = collider.worldRadiusScale.x; rvScale = collider.worldRadiusScale.y; axisScale = collider.worldRadiusScale.z;
+                        ruStart = startR.x; rvStart = startR.y; rAxisStart = startR.z;
+                        ruEnd = endR.x; rvEnd = endR.y; rAxisEnd = endR.z;
                         break;
                 }
                 var u = (Vector3)uAxis;
                 var v = (Vector3)vAxis;
-                var halfHeight = collider.worldHeight * 0.5f;
-                var ru = collider.worldRadius * ruScale;
-                var rv = collider.worldRadius * rvScale;
-                var rAxis = collider.worldRadius * axisScale;
-                var top = position + axisDir * halfHeight;
-                var bottom = position - axisDir * halfHeight;
-                // Equator rings at the cylinder/hemisphere junction (reflects radiusScale)
-                DrawEllipseArc(top, u, v, ru, rv, 0f, Mathf.PI * 2f, RingSegments);
-                DrawEllipseArc(bottom, u, v, ru, rv, 0f, Mathf.PI * 2f, RingSegments);
-                // Side silhouette lines
-                Gizmos.DrawLine(top + u * ru, bottom + u * ru);
-                Gizmos.DrawLine(top - u * ru, bottom - u * ru);
-                Gizmos.DrawLine(top + v * rv, bottom + v * rv);
-                Gizmos.DrawLine(top - v * rv, bottom - v * rv);
+                // Equator rings at the cylinder/hemisphere junction, each at its own end's radii
+                DrawEllipseArc(a, u, v, ruStart, rvStart, 0f, Mathf.PI * 2f, RingSegments);
+                DrawEllipseArc(b, u, v, ruEnd, rvEnd, 0f, Mathf.PI * 2f, RingSegments);
+                // Side silhouette lines: connect matching angular points on the two (possibly differently sized) rings.
+                Gizmos.DrawLine(a + u * ruStart, b + u * ruEnd);
+                Gizmos.DrawLine(a - u * ruStart, b - u * ruEnd);
+                Gizmos.DrawLine(a + v * rvStart, b + v * rvEnd);
+                Gizmos.DrawLine(a - v * rvStart, b - v * rvEnd);
                 // Hemisphere arcs, bulging away from the cylinder body. Both arcs at a given cap share the same
-                // axial radius (rAxis), so they meet exactly at the pole (top/bottom + axisDir * rAxis).
-                DrawEllipseArc(top, u, axisDir, ru, rAxis, 0f, Mathf.PI, ArcSegments);
-                DrawEllipseArc(top, v, axisDir, rv, rAxis, 0f, Mathf.PI, ArcSegments);
-                DrawEllipseArc(bottom, u, -axisDir, ru, rAxis, 0f, Mathf.PI, ArcSegments);
-                DrawEllipseArc(bottom, v, -axisDir, rv, rAxis, 0f, Mathf.PI, ArcSegments);
+                // axial radius, so they meet exactly at the pole (a - axisDir * rAxisStart / b + axisDir * rAxisEnd).
+                DrawEllipseArc(a, u, -axisDir, ruStart, rAxisStart, 0f, Mathf.PI, ArcSegments);
+                DrawEllipseArc(a, v, -axisDir, rvStart, rAxisStart, 0f, Mathf.PI, ArcSegments);
+                DrawEllipseArc(b, u, axisDir, ruEnd, rAxisEnd, 0f, Mathf.PI, ArcSegments);
+                DrawEllipseArc(b, v, axisDir, rvEnd, rAxisEnd, 0f, Mathf.PI, ArcSegments);
+                // Cross marker on the start (a) cap. Start and End are defined by the direction Axis points, and
+                // large offsets can even swap the two ends, so mark which one the Start fields drive.
+                var markerSize = Mathf.Max(ruStart, rvStart) * 0.4f;
+                if (markerSize > 0f) {
+                    Gizmos.DrawLine(a - u * markerSize, a + u * markerSize);
+                    Gizmos.DrawLine(a - v * markerSize, a + v * markerSize);
+                }
             }
             break;
             case JiggleCollider.JiggleColliderType.Plane: {
@@ -132,17 +146,27 @@ public struct JiggleCollider {
     public float radius;
     [NonSerialized] public float worldRadius;
 
-    // Per-axis scale of the capsule's radius, expressed along the collider's local X/Y/Z axes (not reordered
-    // by capsuleAxis). The component matching capsuleAxis scales the cap's axial radius; the other two scale
-    // the cross-section ellipse. Values <= 0 are treated as 1 so that pre-existing serialized data (which
-    // defaults to (0,0,0)) behaves exactly like a circular capsule.
-    public float3 radiusScale;
-    [NonSerialized] public float3 worldRadiusScale;
+    // Capsule-only: the radius at each end of the segment, given per local X/Y/Z axis so each end can be an
+    // ellipsoid rather than a sphere. The component matching capsuleAxis is the cap's axial radius; the other
+    // two are the cross-section. Any component <= 0 falls back to `radius`, which keeps colliders authored
+    // before these fields existed (and any end you simply do not want to shape) perfectly round.
+    // Interpolating between the two ends approximates a tapered capsule: a true frustum SDF's contact point
+    // does not generally coincide with the closest point on the axis, which matches this package's
+    // "authorable rather than physically accurate" collision model.
+    public float3 startRadius;
+    public float3 endRadius;
+    [NonSerialized] public float3 worldStartRadius;
+    [NonSerialized] public float3 worldEndRadius;
 
     public float height;
     [NonSerialized] public float worldHeight;
 
     public CapsuleAxis capsuleAxis;
+
+    // Capsule-only: local-space offsets applied to the start (a) and end (b) endpoints of the capsule segment,
+    // on top of the capsuleAxis/height-derived endpoints. See GetWorldCapsuleSegment.
+    public float3 startOffset;
+    public float3 endOffset;
 
     [NonSerialized] public float4x4 localToWorldMatrix;
     private float AverageScale(float4x4 matrix) {
@@ -169,6 +193,18 @@ public struct JiggleCollider {
         z = math.normalizesafe(localToWorldMatrix.c2.xyz, new float3(0f, 0f, 1f));
     }
 
+    // Single source of truth for the capsule's world-space segment endpoints. startOffset/endOffset are
+    // transformed as directions (no translation), so they move the endpoints in the collider's local space
+    // regardless of where positionOffset/localToWorldMatrix places the collider's center. With both offsets
+    // zero this reduces exactly to center +/- GetWorldAxis() * (worldHeight * 0.5f).
+    public void GetWorldCapsuleSegment(out float3 a, out float3 b) {
+        var center = localToWorldMatrix.c3.xyz;
+        var axisDir = GetWorldAxis();
+        var halfHeight = worldHeight * 0.5f;
+        a = center - axisDir * halfHeight + math.mul(localToWorldMatrix, new float4(startOffset, 0f)).xyz;
+        b = center + axisDir * halfHeight + math.mul(localToWorldMatrix, new float4(endOffset, 0f)).xyz;
+    }
+
     public void Read(Transform transform) {
         Read(transform.localToWorldMatrix);
     }
@@ -182,9 +218,20 @@ public struct JiggleCollider {
         var averageScale = AverageScale(localToWorldMatrix);
         worldRadius = math.max(0f, radius) * averageScale;
         worldHeight = math.max(0f, height) * averageScale;
-        // Non-positive components mean "circular"/"round". The lower clamp keeps an extreme aspect from producing a
-        // radius small enough that its square underflows, which would divide by zero in the ellipsoid solve.
-        worldRadiusScale = math.max(math.select(radiusScale, new float3(1f), radiusScale <= 0f), new float3(1e-3f));
+        worldStartRadius = ResolveEndRadius(startRadius, radius) * averageScale;
+        worldEndRadius = ResolveEndRadius(endRadius, radius) * averageScale;
+    }
+
+    // An all-zero vector means "not authored" and falls back to the uniform `radius`, which is what colliders
+    // serialized before these fields existed look like. Once any component is set the vector is taken as-is, so
+    // a deliberately zeroed component reads as "flat" rather than silently reverting to `radius`. The lower
+    // clamp keeps an extreme aspect from producing a radius whose square underflows, which would divide by zero
+    // in the ellipsoid solve.
+    private static float3 ResolveEndRadius(float3 perAxisRadius, float uniformRadius) {
+        if (math.all(perAxisRadius <= 0f)) {
+            return new float3(math.max(0f, uniformRadius));
+        }
+        return math.max(perAxisRadius, new float3(1e-6f));
     }
 }
 

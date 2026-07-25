@@ -600,6 +600,10 @@ public void GetResults(out JiggleTransform[] poses, out JiggleTreeJobData[] tree
                     isVirtual = !hasTransform,
                     position = jiggleTree.restPositions[o],
                     rotation = jiggleTree.restRotations[o],
+                    // Captured once here (tree (re)build), not tracked continuously like position/rotation
+                    // above: this is the base scale the squash feature multiplies against (see
+                    // JiggleJobSimulate.ApplyPose), and jiggle bones aren't expected to be scale-animated.
+                    scale = bone.localScale,
                 };
                 simulateInputPosesArray[index + o] = pose;
                 restPoseTransformsArray[index + o] = localPose;

@@ -18,6 +18,14 @@ public unsafe struct JiggleSimulatedPoint {
     // World-space offset (rotation + averagePointScale already applied) added to workingPosition to form the
     // collision proxy position used in DoDepenetration. Computed once per Cache(), see JiggleJobSimulate.Cache().
     public float3 collisionOffset;
+    // World-space push applied to this point by collision depenetration this frame (see DepenetrateCollider);
+    // reset to zero every Cache(). Used as the input to squashScale, not written to the bone directly.
+    public float3 contactPush;
+    // Smoothed bone-local scale multiplier driven by contactPush (the "marshmallow" squash). Struct-defaults to
+    // zero like every other field here, but its identity/neutral value is (1,1,1); JiggleJobSimulate.FinishStep
+    // treats an all-zero value as "not yet initialized" and snaps it to (1,1,1) instead of lerping the visible
+    // scale in from zero.
+    public float3 squashScale;
     //public float3 debug;
 
     // Set at initialization
@@ -65,6 +73,14 @@ public unsafe struct JiggleSimulatedPoint {
         }
         if (!GetIsValid(collisionOffset)) {
             failReason = "collisionOffset is NaN";
+            return false;
+        }
+        if (!GetIsValid(contactPush)) {
+            failReason = "contactPush is NaN";
+            return false;
+        }
+        if (!GetIsValid(squashScale)) {
+            failReason = "squashScale is NaN";
             return false;
         }
         if (!GetIsValid(distanceFromRoot)) {
@@ -122,6 +138,12 @@ public unsafe struct JiggleSimulatedPoint {
         }
         if (!GetIsValid(collisionOffset)) {
             collisionOffset = float3.zero;
+        }
+        if (!GetIsValid(contactPush)) {
+            contactPush = float3.zero;
+        }
+        if (!GetIsValid(squashScale)) {
+            squashScale = new float3(1f);
         }
         if (!GetIsValid(distanceFromRoot)) {
             distanceFromRoot = 0.1f;

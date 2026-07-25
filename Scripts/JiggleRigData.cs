@@ -142,6 +142,7 @@ public struct JiggleRigData {
         ValidateCurve(ref jiggleTreeInputParameters.airDrag.curve);
         ValidateCurve(ref jiggleTreeInputParameters.gravity.curve);
         ValidateCurve(ref jiggleTreeInputParameters.collisionRadius.curve);
+        ValidateCurve(ref jiggleTreeInputParameters.squash.curve);
         BuildNormalizedDistanceFromRootList();
         for (int i = 0; i < 100; i++) {
             if (!TryUpdateSerialization()) {

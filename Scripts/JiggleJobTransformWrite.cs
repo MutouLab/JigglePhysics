@@ -30,6 +30,12 @@ public struct JiggleJobTransformWrite : IJobParallelForTransform {
         }
 
         transform.SetPositionAndRotation(pose.position, pose.rotation);
+        // Backward-compat gate for the squash feature: only ever touch localScale when the source point actually
+        // opted in (squash > 0), so rigs that leave squash at its default of 0 never have their scale written,
+        // regardless of what pose.scale happens to contain.
+        if (pose.writeScale) {
+            transform.localScale = pose.scale;
+        }
         transform.GetLocalPositionAndRotation(out var localPosition, out var localRotation);
 
         var previousLocalPose = previousLocalPoses[index];

@@ -25,6 +25,8 @@ public struct JigglePointParameters
     // Bone-local-space offset for the collision proxy position (see JiggleSimulatedPoint.collisionOffset for
     // the resolved world-space value used during depenetration).
     public float3 collisionOffset;
+    // 0..1 strength of contact-driven "marshmallow" scale squash (see JiggleSimulatedPoint.squashScale).
+    public float squash;
 }
 
 [Serializable]
@@ -79,6 +81,7 @@ public struct JiggleTreeInputParameters {
     public JiggleTreeCurvedFloat collisionRadius; // >= 0
     public float3 collisionOffsetStart;           // bone-local space, root end
     public float3 collisionOffsetEnd;             // bone-local space, tip end
+    public JiggleTreeCurvedFloat squash;          // 0..1, default 0 (no squash, see JigglePointParameters.squash)
     public float blend;                           // 0..1
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -97,6 +100,11 @@ public struct JiggleTreeInputParameters {
         float angleLimitVal = angleLimitToggle ? angleLimit.Evaluate(t) : 0f;
         float collisionVal = (collisionToggle && adv) ? collisionRadius.Evaluate(t) : 0f;
         float3 collisionOffsetVal = (collisionToggle && adv) ? math.lerp(collisionOffsetStart, collisionOffsetEnd, t) : float3.zero;
+        // Squash only makes sense where collisions are actually resolved, so it shares collisionRadius's gate.
+        // Gated on advanced alone, matching where it sits in the inspector (next to stretch, its counterpart).
+        // It needs contact to do anything, but there is no need to also gate on collisionToggle: with collision
+        // off nothing ever pushes the point, so the squash target stays at identity by itself.
+        float squashVal = adv ? squash.Evaluate(t) : 0f;
 
         float stiffSq = stiff * stiff;
         float oneMinusStr = 1f - stretchVal;
@@ -118,7 +126,8 @@ public struct JiggleTreeInputParameters {
             drag = dragVal,
             airDrag = airVal,
             collisionRadius = collisionVal,
-            collisionOffset = collisionOffsetVal
+            collisionOffset = collisionOffsetVal,
+            squash = squashVal
         };
     }
 
@@ -133,6 +142,7 @@ public struct JiggleTreeInputParameters {
             ignoreRootMotion = 0f,
             gravity = new JiggleTreeCurvedFloat(1f),
             collisionRadius = new JiggleTreeCurvedFloat(0.1f),
+            squash = new JiggleTreeCurvedFloat(0f),
             soften = 0f,
             angleLimitSoften = 0f,
             blend = 1f
@@ -148,6 +158,7 @@ public struct JiggleTreeInputParameters {
         drag.Ensure01();
         airDrag.Ensure01();
         stretch.Ensure01();
+        squash.Ensure01();
 
         rootStretch = Mathf.Clamp01(rootStretch);
         ignoreRootMotion = Mathf.Clamp01(ignoreRootMotion);

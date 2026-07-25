@@ -19,6 +19,11 @@ public struct JiggleJobSimulate : IJobFor {
     [ReadOnly] [NativeDisableParallelForRestriction]
     public NativeArray<JiggleTransform> inputPoses;
 
+    // The bone's rest/authored local scale, captured when its tree is (re)built (see JiggleMemoryBus.AddTreeToSlice).
+    // Only read for squash: it's the base scale that squashScale multiplies to produce the written localScale.
+    [ReadOnly] [NativeDisableParallelForRestriction]
+    public NativeArray<JiggleTransform> restPoseTransforms;
+
     [NativeDisableParallelForRestriction] public NativeArray<PoseData> outputPoses;
     [ReadOnly,NativeDisableParallelForRestriction] public NativeArray<JiggleCollider> personalColliders;
     [ReadOnly,NativeDisableParallelForRestriction] public NativeArray<JiggleCollider> sceneColliders;
@@ -32,6 +37,7 @@ public struct JiggleJobSimulate : IJobFor {
 
     public JiggleJobSimulate(JiggleMemoryBus bus, float fixedDeltaTime) {
         inputPoses = bus.simulateInputPoses;
+        restPoseTransforms = bus.restPoseTransforms;
         jiggleTrees = bus.jiggleTreeStructs;
         outputPoses = bus.simulationOutputPoseData;
         personalColliders = bus.personalColliders;
@@ -47,6 +53,7 @@ public struct JiggleJobSimulate : IJobFor {
 
     public void UpdateArrays(JiggleMemoryBus bus) {
         inputPoses = bus.simulateInputPoses;
+        restPoseTransforms = bus.restPoseTransforms;
         jiggleTrees = bus.jiggleTreeStructs;
         outputPoses = bus.simulationOutputPoseData;
         personalColliders = bus.personalColliders;
@@ -55,7 +62,7 @@ public struct JiggleJobSimulate : IJobFor {
         broadPhaseMap = bus.broadPhaseMap;
         globalCell = bus.globalCell;
     }
-    
+
     public void SetFixedDeltaTime(float fixedDeltaTime) {
         deltaTimeSquared = fixedDeltaTime * fixedDeltaTime;
     }
@@ -68,6 +75,9 @@ public struct JiggleJobSimulate : IJobFor {
         for (int i = 0; i < tree.pointCount; i++) {
             var point = tree.points[i];
             var parameters = tree.parameters[i];
+            // Reset every frame: DepenetrateCollider accumulates this frame's largest push into it below, and
+            // it should not carry over once a collider stops touching this point.
+            point.contactPush = float3.zero;
             if (point.parentIndex == -1) {
                 // virtual root particles
                 var child = tree.points[point.childrenIndices[0]];
@@ -423,6 +433,14 @@ public struct JiggleJobSimulate : IJobFor {
         }
         collisionDepenetration = math.normalizesafe(collisionDepenetration, new float3(0,0,1)) * maxDepenetrationMagnitude;
         point->workingPosition += collisionDepenetration;
+
+        // Feed squashScale's input: a point can be depenetrated against several colliders/segments in the same
+        // frame (this method runs once per nearby collider), so summing every call's push could grow unbounded
+        // (and even change direction) as more colliders touch it, popping visibly. Keeping only the single
+        // largest push instead gives a bounded, stable "how hard is this point being pressed right now" signal.
+        if (math.lengthsq(collisionDepenetration) > math.lengthsq(point->contactPush)) {
+            point->contactPush = collisionDepenetration;
+        }
     }
 
     private unsafe bool ContainsIndex(int* array, int arrayCount, int index) {
@@ -628,7 +646,59 @@ public struct JiggleJobSimulate : IJobFor {
             var point = tree.points+i;
             point->lastPosition = point->position;
             point->position = point->workingPosition;
+            UpdateSquashScale(tree, i);
         }
+    }
+
+    // Smooths JiggleSimulatedPoint.squashScale towards a target derived from this point's contactPush, i.e. the
+    // "marshmallow" contact squash. Runs for every real point every frame (even when parameters.squash is 0, or
+    // there was no contact this frame) so the multiplier keeps relaxing towards identity in the background;
+    // ApplyPose is what actually decides whether the result gets written to the bone.
+    private unsafe void UpdateSquashScale(JiggleTreeJobData tree, int i) {
+        var point = tree.points + i;
+        if (!point->hasTransform) {
+            return;
+        }
+        var parameters = tree.parameters + i;
+
+        var targetScale = new float3(1f);
+        var pushMagnitude = math.length(point->contactPush);
+        if (parameters->squash > 0f && pushMagnitude > 1e-5f && point->worldRadius > 1e-5f) {
+            // Move the world-space push into the bone's local space (same rotation collisionOffset already
+            // uses) so the squash/bulge axes follow the bone instead of the world.
+            var boneRotation = tree.GetInputPose(inputPoses, i).rotation;
+            var localPushDir = math.rotate(math.inverse(boneRotation), point->contactPush) / pushMagnitude;
+
+            // How deep the push is relative to this point's own collision radius, saturated to [0,1]: a push as
+            // large as the point's own radius already counts as "fully squashed," so arbitrarily deep or fast
+            // depenetration can't drive the scale past that (which could otherwise invert it).
+            var normalizedPush = math.saturate(pushMagnitude / point->worldRadius);
+            var shrink = math.saturate(parameters->squash * normalizedPush);
+
+            // Volume-preserving-ish squash: shrink along the push direction, bulge perpendicular to it.
+            // localScale only scales along local X/Y/Z, so a push that isn't axis-aligned is approximated by
+            // blending each axis between the compressed and expanded factor by how much of localPushDir lies
+            // along it (axisWeight), rather than solving a true arbitrary-axis scale.
+            var compress = math.max(1f - shrink, 0.05f); // floor avoids a zero/inverted scale at shrink -> 1
+            var expand = math.sqrt(1f / compress); // compress * expand^2 == 1: exact if the push were axis-aligned
+            var axisWeight = math.abs(localPushDir);
+            targetScale = math.lerp(new float3(expand), new float3(compress), axisWeight);
+        }
+
+        var squashScale = point->squashScale;
+        if (math.all(squashScale == float3.zero)) {
+            // squashScale struct-defaults to zero like every other field, but its neutral value is (1,1,1); a
+            // brand-new (or newly-real) point should start from identity, not lerp the visible scale in from zero.
+            squashScale = new float3(1f);
+        }
+        // Squash is the visual counterpart of stretch, so it relaxes on the very elasticity the length
+        // constraint uses (lengthElasticity squared, see the constraint solve) instead of a time constant of its
+        // own. That solve applies its blend once per time increment while this runs once per simulation step,
+        // so raise it to that power to land on the same recovery per step. Practical consequence: a stretchier
+        // rig squashes and recovers loosely, and Stretch = 0 (a rigid length) tracks contact immediately.
+        var lengthElasticity = parameters->lengthElasticity * parameters->lengthElasticity;
+        var blend = 1f - math.pow(1f - lengthElasticity, math.max(1, timeIncrements));
+        point->squashScale = math.lerp(squashScale, targetScale, blend);
     }
 
     private unsafe void ApplyPose(JiggleTreeJobData tree) {
@@ -686,6 +756,21 @@ public struct JiggleJobSimulate : IJobFor {
                 position = point->workingPosition,
                 rotation = math.mul(animPoseToPhysicsPose, tree.GetInputPose(inputPoses, i).rotation),
             };
+            // Backward-compat gate (see JiggleTransform.writeScale): only compute/write a scale at all when this
+            // point actually opted into squash, so a rig that never touches squash never has its localScale
+            // written, no matter what (uninitialized-looking) value scale/squashScale would otherwise contain.
+            // Writing also continues while a previously squashed point is still relaxing: dropping squash back to
+            // 0 would otherwise close the write path mid-squash and strand the bone at its last written scale.
+            var squashScale = point->squashScale;
+            if (math.all(squashScale == float3.zero)) {
+                // Same identity default UpdateSquashScale applies: the struct zero-initializes, but neutral is 1.
+                squashScale = new float3(1f);
+            }
+            if (parameters->squash > 0f || math.any(math.abs(squashScale - 1f) > 1e-4f)) {
+                var restLocalScale = tree.GetInputPose(restPoseTransforms, i).scale;
+                transform.scale = restLocalScale * squashScale;
+                transform.writeScale = true;
+            }
             tree.WriteOutputPose(outputPoses, i, transform, rootSimulationPosition - rootPose, rootSimulationPosition, rootParameterElasticity);
         }
     }

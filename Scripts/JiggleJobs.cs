@@ -109,6 +109,13 @@ public class JiggleJobs {
         _memoryBus.Dispose();
     }
 
+    // The reset job writes restPoseTransforms, which the simulate job reads for the squash feature's base
+    // scale, so every reset has to be sequenced after the most recently scheduled simulate. Without this the
+    // job safety system rejects the second scheduling path outright.
+    private JobHandle GetResetDependency(JobHandle dependency) {
+        return hasHandleSimulate ? JobHandle.CombineDependencies(dependency, handleSimulate) : dependency;
+    }
+
     public JobHandle SchedulePoses(double timeAsDouble) {
         if (_memoryBus.transformCount == 0) {
             return default;
@@ -116,9 +123,9 @@ public class JiggleJobs {
         jobBulkTransformReset.UpdateArrays(_memoryBus);
         // TODO: This technically only needs to happen for root bones, as their positions are used for posing. Instead just doing a full reset because I'm lazy.
         if (hasHandleBulkReset && hasHandleTransformWrite) {
-            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), JobHandle.CombineDependencies(handleTransformWrite, handleBulkReset));
+            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), GetResetDependency(JobHandle.CombineDependencies(handleTransformWrite, handleBulkReset)));
         } else {
-            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray());
+            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), GetResetDependency(default));
         }
         hasHandleBulkReset = true;
 
@@ -231,9 +238,9 @@ public class JiggleJobs {
         hasHandleBroadPhase = true;
 
         if (hasHandleTransformWrite) {
-            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), JobHandle.CombineDependencies(colliderHandles, handleTransformWrite));
+            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), GetResetDependency(JobHandle.CombineDependencies(colliderHandles, handleTransformWrite)));
         } else {
-            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), colliderHandles);
+            handleBulkReset = jobBulkTransformReset.Schedule(_memoryBus.GetTransformAccessArray(), GetResetDependency(colliderHandles));
         }
         hasHandleBulkReset = true;
 

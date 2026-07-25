@@ -88,6 +88,16 @@ public class JiggleTreeInputPropertiesPropertyDrawer : PropertyDrawer {
         SetCurvableSlider(
             visualElement,
             property,
+            "SquashControl",
+            nameof(JiggleTreeInputParameters.squash),
+            "Squash",
+            0f,
+            1f,
+            "Squash is stretch's counterpart: how much contact with a Jiggle Collider flattens the bone and bulges it perpendicular to the contact, like a marshmallow. It relaxes on the same elasticity Stretch drives. 0 (default) never writes to the bone's scale at all."
+        );
+        SetCurvableSlider(
+            visualElement,
+            property,
             "DragControl",
             nameof(JiggleTreeInputParameters.drag),
             "Drag",

@@ -92,6 +92,11 @@ public class JiggleRig : MonoBehaviour, IJiggleParameterProvider {
         set => animatedParameters = value;
     }
 
+    // Collider set as of the last inspector change, to notice registration edits while playing. Not
+    // serialized: it describes the state the live tree was built from, which a domain reload rebuilds anyway.
+    [NonSerialized] private int lastColliderSignature;
+    [NonSerialized] private bool hasColliderSignature;
+
     private void OnValidate() {
         if (!jiggleRigData.hasSerializedData) {
             jiggleRigData = JiggleRigData.Default();
@@ -99,6 +104,16 @@ public class JiggleRig : MonoBehaviour, IJiggleParameterProvider {
         jiggleRigData.OnValidate();
         if (Application.isPlaying) {
             UpdateParameters();
+            // Parameters are pushed to the running tree, but the collider set is only read when the tree is
+            // built, so editing Jiggle Colliders while playing would otherwise appear to do nothing until the
+            // rig was toggled off and on. Rebuilding on every OnValidate instead would restart the simulation
+            // on each slider drag, hence comparing the set rather than always dirtying.
+            var colliderSignature = jiggleRigData.GetColliderSignature();
+            if (hasColliderSignature && colliderSignature != lastColliderSignature) {
+                segment?.SetDirty();
+            }
+            lastColliderSignature = colliderSignature;
+            hasColliderSignature = true;
         }
     }
 

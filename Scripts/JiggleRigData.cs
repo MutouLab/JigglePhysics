@@ -33,13 +33,27 @@ public struct JiggleRigData {
     [SerializeField] public JiggleTreeInputParameters jiggleTreeInputParameters;
     [SerializeField] public Transform[] excludedTransforms;
     [SerializeField, HideInInspector] public JiggleTransformCachedData[] transformCachedData;
-    // References to JiggleColliderExample components placed in the scene (VRC PhysBone-Collider-style), rather
-    // than inline collider definitions. This makes personal collisions opt-in per rig: a rig only collides
-    // against colliders it explicitly references here, instead of every rig colliding against every scene
-    // collider (which caused self-collision "explosions" for colliders shared between mirrored rigs, e.g. two
-    // breasts colliding with each other's own rig). See JiggleColliderExample.affectsAllRigs for the opposite,
-    // global-collider behavior.
-    [SerializeField] public JiggleColliderExample[] jiggleColliders;
+    // References to GameObjects carrying JiggleColliderExample components (VRC PhysBone-Collider-style),
+    // rather than inline collider definitions. This makes personal collisions opt-in per rig: a rig only
+    // collides against colliders it explicitly references here, instead of every rig colliding against every
+    // scene collider (which caused self-collision "explosions" for colliders shared between mirrored rigs,
+    // e.g. two breasts colliding with each other's own rig). See JiggleColliderExample.affectsAllRigs for the
+    // opposite, global-collider behavior.
+    // The reference is per-GameObject, not per-component: every collider component on a registered object
+    // takes part. A concave surface has to be approximated by several convex shapes (e.g. a back's groove as
+    // stacked mounds), and per-component references made that proxy register one drag at a time and silently
+    // fall out of sync when its shapes were later refined - every referencing rig had to be revisited.
+    // Children are searched only for objects marked with JiggleColliderGroup, so that a proxy split across
+    // several child objects can also be registered once, without a plain bone registration dragging in every
+    // collider further down the skeleton.
+    [SerializeField, Tooltip("GameObjects whose Jiggle Collider Example components this rig collides " +
+        "against. Every collider component on a registered object takes part; children are searched only if " +
+        "the object has a Jiggle Collider Group component. Maximum of 32 colliders total per rig.")]
+    public GameObject[] jiggleColliderObjects;
+
+    // Pre-v0.0.4 storage: references were per-component rather than per-GameObject. Kept only as the
+    // migration source for TryUpdateSerialization, which empties it into jiggleColliderObjects.
+    [SerializeField, HideInInspector] public JiggleColliderExample[] jiggleColliders;
     
     [NonSerialized]
     private Dictionary<Transform, JiggleTransformCachedData> transformToCachedDataMap;
@@ -84,6 +98,24 @@ public struct JiggleRigData {
                     transformCachedData[i] = cachedData;
                 }
                 serializedVersion = "v0.0.3";
+                return true;
+            case "v0.0.3":
+                // Collider references become per-GameObject (see jiggleColliderObjects). Distinct components
+                // on the same object collapse to one entry: without the dedup, an object whose shapes were
+                // referenced individually would register once per old reference and push twice as hard.
+                if (jiggleColliders is { Length: > 0 }) {
+                    var migratedObjects = new List<GameObject>(jiggleColliders.Length);
+                    for (int i = 0; i < jiggleColliders.Length; i++) {
+                        var reference = jiggleColliders[i];
+                        if (reference == null) continue;
+                        if (!migratedObjects.Contains(reference.gameObject)) {
+                            migratedObjects.Add(reference.gameObject);
+                        }
+                    }
+                    jiggleColliderObjects = migratedObjects.ToArray();
+                    jiggleColliders = Array.Empty<JiggleColliderExample>();
+                }
+                serializedVersion = "v0.0.4";
                 return true;
             default:
                 return false;
@@ -134,18 +166,64 @@ public struct JiggleRigData {
         return false;
     }
     
-    // Must stay index-for-index with GetJiggleColliderTransforms: JiggleTree pairs personalColliders[i] with
-    // personalColliderTransforms[i] (see JiggleMemoryBus's TransformAccessArray population), so all three
-    // methods (including GetJiggleColliderEndTransforms) skip exactly the same (null/destroyed) reference
-    // slots, in the same order, over the same source array.
-    public void GetJiggleColliders(List<JiggleCollider> colliders) {
+    // Scratch space for expanding registered GameObjects into their collider components without per-rebuild
+    // allocations. Main-thread only, like every other authoring entry point here.
+    private static readonly List<JiggleColliderExample> tempColliderComponents = new();
+    // Deduplication is per-component, not per-registered-object: a group and one of its children can both be
+    // registered, which would otherwise add the same shape twice and push twice as hard.
+    private static readonly HashSet<JiggleColliderExample> tempSeenColliders = new();
+
+    // JiggleTree pairs personalColliders[i] with personalColliderTransforms[i] and
+    // personalColliderEndTransforms[i] (see JiggleMemoryBus's TransformAccessArray population). One method
+    // fills all three lists in a single pass so they cannot fall out of index-for-index step - previously
+    // this was a comment contract across three separate methods.
+    // Returns the total collider count found before the 32-per-tree cap truncates the lists, so OnValidate
+    // can warn about the overflow without duplicating the expansion logic. The truncation itself is silent
+    // because this also runs per-frame from the selected-rig gizmo, which would spam a warning.
+    public int GetJiggleColliders(List<JiggleCollider> colliders, List<Transform> colliderTransforms, List<Transform> colliderEndTransforms)
+        => GetJiggleColliders(colliders, colliderTransforms, colliderEndTransforms, out _);
+
+    // The signature overload additionally reports an identity hash of the expanded set, so a caller can tell
+    // a registration edit (which needs a tree rebuild) from a parameter edit. See JiggleRig.OnValidate.
+    public int GetJiggleColliders(List<JiggleCollider> colliders, List<Transform> colliderTransforms, List<Transform> colliderEndTransforms, out int signature) {
+        signature = 17;
         colliders.Clear();
-        var count = jiggleColliders.Length;
-        for(int i=0;i<count;i++) {
-            var reference = jiggleColliders[i];
-            if (reference == null) continue;
-            colliders.Add(reference.Collider.collider);
+        colliderTransforms.Clear();
+        colliderEndTransforms.Clear();
+        if (jiggleColliderObjects == null) {
+            return 0;
         }
+        tempSeenColliders.Clear();
+        var count = jiggleColliderObjects.Length;
+        for (int i = 0; i < count; i++) {
+            var obj = jiggleColliderObjects[i];
+            if (obj == null) continue;
+            // Children are searched only for objects explicitly marked as a collection (see
+            // JiggleColliderGroup); a plain registration stays at the object itself, so registering a bone
+            // can never drag in the colliders of every bone below it. Inactive objects are included either
+            // way, matching how a direct registration ignores the active state.
+            if (obj.GetComponent<JiggleColliderGroup>() != null) {
+                obj.GetComponentsInChildren(true, tempColliderComponents);
+            } else {
+                obj.GetComponents(tempColliderComponents);
+            }
+            var componentCount = tempColliderComponents.Count;
+            for (int o = 0; o < componentCount; o++) {
+                var reference = tempColliderComponents[o];
+                if (!tempSeenColliders.Add(reference)) continue;
+                signature = signature * 31 + reference.GetInstanceID();
+                colliders.Add(reference.Collider.collider);
+                colliderTransforms.Add(reference.ResolvedTransform);
+                colliderEndTransforms.Add(reference.Collider.endTransform);
+            }
+        }
+        var total = colliders.Count;
+        if (total > 32) {
+            colliders.RemoveRange(32, total - 32);
+            colliderTransforms.RemoveRange(32, total - 32);
+            colliderEndTransforms.RemoveRange(32, total - 32);
+        }
+        return total;
     }
 
     void ValidateCurve(ref AnimationCurve animationCurve) {
@@ -154,9 +232,22 @@ public struct JiggleRigData {
         }
     }
 
+    // Scratch lists for the OnValidate overflow check and the signature below; only the returned count and
+    // signature are read, never the list contents.
+    private static readonly List<JiggleCollider> tempValidationColliders = new();
+    private static readonly List<Transform> tempValidationTransforms = new();
+    private static readonly List<Transform> tempValidationEndTransforms = new();
+
+    // Identity of the currently registered collider set, cheap enough to sample on every inspector change.
+    public int GetColliderSignature() {
+        GetJiggleColliders(tempValidationColliders, tempValidationTransforms, tempValidationEndTransforms, out var signature);
+        return signature;
+    }
+
     public void OnValidate() {
         jiggleTreeInputParameters.OnValidate();
         excludedTransforms ??= Array.Empty<Transform>();
+        jiggleColliderObjects ??= Array.Empty<GameObject>();
         ValidateCurve(ref jiggleTreeInputParameters.stiffness.curve);
         ValidateCurve(ref jiggleTreeInputParameters.angleLimit.curve);
         ValidateCurve(ref jiggleTreeInputParameters.stretch.curve);
@@ -172,9 +263,11 @@ public struct JiggleRigData {
                 break;
             }
         }
-        if (jiggleColliders is { Length: > 32 }) {
+        // The cap counts expanded colliders (a registered object contributes every component it carries), so
+        // the registration array's length alone proves nothing - run the real expansion and read its total.
+        // Truncation happens inside GetJiggleColliders; this only surfaces the warning at authoring time.
+        if (GetJiggleColliders(tempValidationColliders, tempValidationTransforms, tempValidationEndTransforms) > 32) {
             Debug.LogWarning("JigglePhysics: Maximum of 32 personal Jiggle Colliders are supported per tree. Extra colliders will be dropped.");
-            Array.Resize(ref jiggleColliders, 32);
         }
     }
     public void BuildNormalizedDistanceFromRootList() {
@@ -238,29 +331,6 @@ public struct JiggleRigData {
         return null;
     }
     
-    // See the index-correspondence note on GetJiggleColliders.
-    public void GetJiggleColliderTransforms(List<Transform> colliderTransforms) {
-        colliderTransforms.Clear();
-        var count = jiggleColliders.Length;
-        for(int i=0;i<count;i++) {
-            var reference = jiggleColliders[i];
-            if (reference == null) continue;
-            colliderTransforms.Add(reference.ResolvedTransform);
-        }
-    }
-
-    // See the index-correspondence note on GetJiggleColliders. A referenced collider with no end transform
-    // contributes a null entry here (not skipped): the list must stay index-for-index with the other two.
-    public void GetJiggleColliderEndTransforms(List<Transform> colliderEndTransforms) {
-        colliderEndTransforms.Clear();
-        var count = jiggleColliders.Length;
-        for(int i=0;i<count;i++) {
-            var reference = jiggleColliders[i];
-            if (reference == null) continue;
-            colliderEndTransforms.Add(reference.Collider.endTransform);
-        }
-    }
-
     public bool GetHasRootTransformError() => !rootBone;
     public bool GetCacheIsValid() {
         if (transformCachedData is not { Length: > 0 } || transformToCachedDataMap == null || transformToCachedDataMap.Count != transformCachedData.Length) {
@@ -318,19 +388,20 @@ public struct JiggleRigData {
     public static JiggleRigData Default() {
         return new JiggleRigData {
             rootBone = null,
-            serializedVersion = "v0.0.3",
+            serializedVersion = "v0.0.4",
             hasSerializedData = true,
             excludeRoot = false,
             jiggleTreeInputParameters = JiggleTreeInputParameters.Default(),
             excludedTransforms = Array.Empty<Transform>(),
             transformCachedData = Array.Empty<JiggleTransformCachedData>(),
+            jiggleColliderObjects = Array.Empty<GameObject>(),
             jiggleColliders = Array.Empty<JiggleColliderExample>()
         };
     }
 
     public void OnDrawGizmosSelected() {
         // Referenced colliders are no longer drawn from here: JiggleColliderExample.OnDrawGizmos() already draws
-        // its own shape unconditionally (not selection-gated), so looping over jiggleColliders here as well would
+        // its own shape unconditionally (not selection-gated), so looping over jiggleColliderObjects here as well would
         // just double them up whenever this rig happens to be selected.
 
         if (!rootBone) return;

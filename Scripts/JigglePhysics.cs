@@ -237,9 +237,7 @@ public static class JigglePhysics {
         tempRestLocalPositions.Clear();
         tempRestLocalRotations.Clear();
         tempRestLocalScales.Clear();
-        jiggleRig.GetJiggleColliders(tempColliders);
-        jiggleRig.GetJiggleColliderTransforms(tempColliderTransforms);
-        jiggleRig.GetJiggleColliderEndTransforms(tempColliderEndTransforms);
+        jiggleRig.GetJiggleColliders(tempColliders, tempColliderTransforms, tempColliderEndTransforms);
         if (!jiggleRig.GetCacheIsValid()) jiggleRig.BuildNormalizedDistanceFromRootList();
         var backProjection = Vector3.zero;
         var backProjectionChildCount = jiggleRig.GetValidChildrenCount(jiggleRig.rootBone);

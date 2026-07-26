@@ -31,7 +31,9 @@ public class JiggleRigDataPropertyDrawer : PropertyDrawer {
         excludedTransformsElement.BindProperty(property.FindPropertyRelative(nameof(JiggleRigData.excludedTransforms)));
 
         var personalCollidersElement = visualElement.Q<PropertyField>("PersonalCollidersField");
-        personalCollidersElement.BindProperty(property.FindPropertyRelative(nameof(JiggleRigData.jiggleColliders)));
+        personalCollidersElement.BindProperty(property.FindPropertyRelative(nameof(JiggleRigData.jiggleColliderObjects)));
+        // Keep the label the docs and muscle memory know, rather than the field name's "Jiggle Collider Objects".
+        personalCollidersElement.label = "Jiggle Colliders";
 
         var container = visualElement.Q<VisualElement>("Contents");
         //var rig = (JiggleRigData)property.boxedValue;

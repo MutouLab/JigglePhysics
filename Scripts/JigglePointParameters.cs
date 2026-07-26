@@ -35,6 +35,10 @@ public struct JigglePointParameters
     // JiggleJobSimulate.GetNormalizedPush) above which it starts ramping in. See JiggleJobSimulate.GetContactSoftening.
     public float contactSoftness;
     public float contactSoftnessThreshold;
+    // 0..1 fraction of the velocity along a contact's normal that is removed after depenetration (see
+    // JiggleJobSimulate.FinishStep), making contact inelastic; sliding along the surface is never touched.
+    // 0 reproduces the original behavior, where a push-out also became speed.
+    public float contactDamping;
 }
 
 [Serializable]
@@ -93,6 +97,7 @@ public struct JiggleTreeInputParameters {
     public float squashBulge;                     // >= 0, default 1 (exact volume preservation)
     public JiggleTreeCurvedFloat contactSoftness; // 0..1, default 0 (no softening, see JigglePointParameters.contactSoftness)
     public float contactSoftnessThreshold;        // 0..1, normalizedPush below which contactSoftness has no effect
+    public JiggleTreeCurvedFloat contactDamping;  // 0..1, default 0 (push-out becomes velocity, as before)
     public float blend;                           // 0..1
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -119,6 +124,9 @@ public struct JiggleTreeInputParameters {
         // softening formula in JiggleJobSimulate.GetContactSoftening, which itself only matters where collisions
         // push the point in the first place.
         float contactSoftnessVal = adv ? contactSoftness.Evaluate(t) : 0f;
+        // Gated on advanced alone, like squash and contactSoftness: it only has an effect where collisions push
+        // the point, so gating on collisionToggle as well would be redundant.
+        float contactDampingVal = adv ? contactDamping.Evaluate(t) : 0f;
 
         float stiffSq = stiff * stiff;
         float oneMinusStr = 1f - stretchVal;
@@ -148,7 +156,8 @@ public struct JiggleTreeInputParameters {
             contactSoftness = contactSoftnessVal,
             // Not gated on adv/curve-evaluated: it's just a pivot point for contactSoftness, and contactSoftness
             // being 0 already makes it inert, same as how angleLimitSoften passes through unconditionally.
-            contactSoftnessThreshold = contactSoftnessThreshold
+            contactSoftnessThreshold = contactSoftnessThreshold,
+            contactDamping = contactDampingVal
         };
     }
 
@@ -167,6 +176,7 @@ public struct JiggleTreeInputParameters {
             squashBulge = 1f,
             contactSoftness = new JiggleTreeCurvedFloat(0f),
             contactSoftnessThreshold = 0.2f,
+            contactDamping = new JiggleTreeCurvedFloat(0f),
             soften = 0f,
             angleLimitSoften = 0f,
             blend = 1f
@@ -187,6 +197,7 @@ public struct JiggleTreeInputParameters {
         // when the "volume" is a stand-in rather than anything measured off the mesh.
         squashBulge = Mathf.Max(0f, squashBulge);
         contactSoftness.Ensure01();
+        contactDamping.Ensure01();
 
         rootStretch = Mathf.Clamp01(rootStretch);
         ignoreRootMotion = Mathf.Clamp01(ignoreRootMotion);

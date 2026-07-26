@@ -124,6 +124,16 @@ public class JiggleTreeInputPropertiesPropertyDrawer : PropertyDrawer {
         SetCurvableSlider(
             visualElement,
             property,
+            "ContactDampingControl",
+            nameof(JiggleTreeInputParameters.contactDamping),
+            "Contact Damping",
+            0f,
+            1f,
+            "How much speed a contact removes along its own normal. Velocity here is just how far a point moved, so a push-out also becomes speed, and a point squeezed between colliders picks up a little from every push until it escapes and launches away, bouncing. 1 makes contact fully inelastic, so the point settles against the surface instead. Sliding along the surface is never damped, and a point touching nothing is unaffected. 0 (default) is the original behavior. High values also stop a moving collider from flicking the bone, so curve it toward the tips, where wedging happens."
+        );
+        SetCurvableSlider(
+            visualElement,
+            property,
             "DragControl",
             nameof(JiggleTreeInputParameters.drag),
             "Drag",

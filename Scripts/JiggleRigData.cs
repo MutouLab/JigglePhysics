@@ -257,6 +257,7 @@ public struct JiggleRigData {
         ValidateCurve(ref jiggleTreeInputParameters.collisionRadius.curve);
         ValidateCurve(ref jiggleTreeInputParameters.squash.curve);
         ValidateCurve(ref jiggleTreeInputParameters.contactSoftness.curve);
+        ValidateCurve(ref jiggleTreeInputParameters.contactDamping.curve);
         // Never re-derive the cache from the bones while playing. VisitAndSetCacheData samples their live local
         // pose, scale and spacing, but the simulation writes exactly those every frame, so tweaking any slider
         // mid-play would capture the current jiggled (and squashed) pose as the rest pose - the authored

@@ -22,6 +22,11 @@ public unsafe struct JiggleSimulatedPoint {
     // reset to zero every Cache(). Feeds JiggleJobSimulate.GetNormalizedPush (contact-driven elasticity
     // softening); no longer used for squash itself, which is now driven by bone length instead of push direction.
     public float3 contactPush;
+    // Net world-space depenetration applied to this point during the current step (see DepenetrateCollider).
+    // Unlike contactPush, which keeps only the single largest push as a "how hard is this pressed" signal,
+    // this is the signed sum, because it stands in for the displacement that FinishStep has to keep out of the
+    // implied Verlet velocity. Consumed and cleared by FinishStep.
+    public float3 stepDepenetration;
     // Whether ApplyPose last wrote a squash-driven scale to this bone. Squash itself needs no persisted state
     // (it's recomputed fresh from the current bone length every frame), but this lets ApplyPose notice when
     // squash drops back to 0 and write the rest scale back exactly once, instead of leaving the bone stuck at
@@ -79,6 +84,10 @@ public unsafe struct JiggleSimulatedPoint {
         }
         if (!GetIsValid(contactPush)) {
             failReason = "contactPush is NaN";
+            return false;
+        }
+        if (!GetIsValid(stepDepenetration)) {
+            failReason = "stepDepenetration is NaN";
             return false;
         }
         if (!GetIsValid(distanceFromRoot)) {
@@ -139,6 +148,9 @@ public unsafe struct JiggleSimulatedPoint {
         }
         if (!GetIsValid(contactPush)) {
             contactPush = float3.zero;
+        }
+        if (!GetIsValid(stepDepenetration)) {
+            stepDepenetration = float3.zero;
         }
         if (!GetIsValid(distanceFromRoot)) {
             distanceFromRoot = 0.1f;

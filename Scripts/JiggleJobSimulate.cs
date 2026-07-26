@@ -76,9 +76,10 @@ public struct JiggleJobSimulate : IJobFor {
         for (int i = 0; i < tree.pointCount; i++) {
             var point = tree.points[i];
             var parameters = tree.parameters[i];
-            // Reset every frame: DepenetrateCollider accumulates this frame's largest push into it below, and
-            // it should not carry over once a collider stops touching this point.
+            // Both are accumulated by DepenetrateCollider below and must not carry over once a collider stops
+            // touching this point: contactPush keeps this frame's largest push, stepDepenetration the net one.
             point.contactPush = float3.zero;
+            point.stepDepenetration = float3.zero;
             if (point.parentIndex == -1) {
                 // virtual root particles
                 var child = tree.points[point.childrenIndices[0]];
@@ -235,10 +236,17 @@ public struct JiggleJobSimulate : IJobFor {
                     depenetrationDir = math.normalizesafe(sphere_diff, new float3(0, 0, 1));
                     var depenetrationVector2 = depenetrationDir * depenetrationMagnitude;
                     depenetrationVector2 *= hardness;
+                    // Same combination rule as the capsule case: sum clamped to the deeper push, so redundant
+                    // measurements that agree keep their depth while disagreement cancels instead of being
+                    // renormalized into a full-strength push along a noise direction.
                     var mag1 = math.length(depenetrationVector);
                     var mag2 = math.length(depenetrationVector2);
-                    depenetrationVector = (depenetrationVector+depenetrationVector2)*0.5f;
-                    depenetrationVector = math.normalizesafe(depenetrationVector, new float3(0,0,1)) * math.max(mag1, mag2);
+                    var sphere_maxMagnitude = math.max(mag1, mag2);
+                    depenetrationVector += depenetrationVector2;
+                    var sphere_combinedLength = math.length(depenetrationVector);
+                    if (sphere_combinedLength > sphere_maxMagnitude) {
+                        depenetrationVector *= sphere_maxMagnitude / sphere_combinedLength;
+                    }
                 }
                 if (!(otherPointParameters->angleElasticity == 1f
                       && otherPointParameters->rootElasticity == 1f
@@ -255,36 +263,52 @@ public struct JiggleJobSimulate : IJobFor {
                 var pointPosition = point->workingPosition + point->collisionOffset;
                 var otherPosition = otherPoint->workingPosition + otherPoint->collisionOffset;
                 var pointRadius = point->worldRadius;
+                // Two independent tests, neither of which implies the other: the bone's whole span against the
+                // capsule, and this point's own sphere against it. The span is measured with the bone radius
+                // interpolated at the closest approach, so an approach that lands near the parent is compared
+                // against the parent's radius, which can be far smaller than this point's - leaving this point
+                // inside the collider while the span reports clear. Running the point test only when the span
+                // test already penetrated (the previous structure) therefore switched the push on and off
+                // across that boundary. It showed up worst around the caps, where clamping the closest point to
+                // an endpoint pins the capsule side in place while the bone side keeps sliding, so the two
+                // tests disagree the most and the point buzzed against the cap instead of resting on it.
                 // Find closest points between capsule axis and bone segment
                 ClosestPointsOnTwoSegments(capsuleA, capsuleB, pointPosition, otherPosition, out var closestOnCapsule, out var closestOnBone, out var tValueBone);
                 var cap_diff = closestOnBone - closestOnCapsule;
                 var cap_radii = GetCapsuleRadii(collider, closestOnCapsule, capsuleA, capsuleSegment, capsuleSegmentLengthSq);
                 // Same per-segment taper as the sphere case: tValueBone runs from this point (0) to its parent (1).
-                var cap_combinedRadius = GetBoneRadius(point, otherPoint, tValueBone) + GetEllipseColliderRadius(collider, cap_diff, cap_radii);
-                var cap_distance = math.length(cap_diff);
-                var cap_depenetrationMagnitude = cap_combinedRadius - cap_distance;
-                if (cap_depenetrationMagnitude <= 0f) {
-                    return float3.zero;
-                }
-                var cap_depenetrationDir = math.normalizesafe(cap_diff, new float3(0, 0, 1));
-                var cap_depenetrationVector = cap_depenetrationDir * cap_depenetrationMagnitude;
-                var cap_pValue = math.clamp(2f - tValueBone * 2f, 0f, 1f);
-                cap_depenetrationVector *= hardness * cap_pValue;
+                var cap_hasSegmentPush = TryGetEllipsoidDepenetration(collider, cap_diff, cap_radii, GetBoneRadius(point, otherPoint, tValueBone), out var cap_segmentPush);
+
                 // Point-to-capsule direct check
                 ClosestPointOnSegment(pointPosition, capsuleA, capsuleB, out var closestOnCapsuleToPoint);
-                cap_diff = pointPosition - closestOnCapsuleToPoint;
-                cap_radii = GetCapsuleRadii(collider, closestOnCapsuleToPoint, capsuleA, capsuleSegment, capsuleSegmentLengthSq);
-                cap_combinedRadius = pointRadius + GetEllipseColliderRadius(collider, cap_diff, cap_radii);
-                cap_distance = math.length(cap_diff);
-                cap_depenetrationMagnitude = cap_combinedRadius - cap_distance;
-                if (cap_depenetrationMagnitude > 0f) {
-                    cap_depenetrationDir = math.normalizesafe(cap_diff, new float3(0, 0, 1));
-                    var cap_depenetrationVector2 = cap_depenetrationDir * cap_depenetrationMagnitude;
-                    cap_depenetrationVector2 *= hardness;
+                var cap_pointDiff = pointPosition - closestOnCapsuleToPoint;
+                var cap_pointRadii = GetCapsuleRadii(collider, closestOnCapsuleToPoint, capsuleA, capsuleSegment, capsuleSegmentLengthSq);
+                var cap_hasPointPush = TryGetEllipsoidDepenetration(collider, cap_pointDiff, cap_pointRadii, pointRadius, out var cap_pointPush);
+
+                if (!cap_hasSegmentPush && !cap_hasPointPush) {
+                    return float3.zero;
+                }
+
+                var cap_depenetrationVector = float3.zero;
+                if (cap_hasSegmentPush) {
+                    var cap_pValue = math.clamp(2f - tValueBone * 2f, 0f, 1f);
+                    cap_depenetrationVector = cap_segmentPush * (hardness * cap_pValue);
+                }
+                if (cap_hasPointPush) {
+                    var cap_depenetrationVector2 = cap_pointPush * hardness;
+                    // Sum, clamped to the deeper of the two - not average-then-renormalize-to-max. The two
+                    // tests are redundant measurements of the same contact; when they agree the clamp leaves
+                    // the deeper push intact, but around the caps they disagree the most, and renormalizing a
+                    // near-cancelled average re-inflated it to a full-strength push in a noise direction (with
+                    // the old (0,0,1) fallback, a world-Z shove) - the point buzzed on the cap instead of resting.
                     var mag1 = math.length(cap_depenetrationVector);
                     var mag2 = math.length(cap_depenetrationVector2);
-                    cap_depenetrationVector = (cap_depenetrationVector + cap_depenetrationVector2) * 0.5f;
-                    cap_depenetrationVector = math.normalizesafe(cap_depenetrationVector, new float3(0, 0, 1)) * math.max(mag1, mag2);
+                    var cap_maxMagnitude = math.max(mag1, mag2);
+                    cap_depenetrationVector += cap_depenetrationVector2;
+                    var cap_combinedLength = math.length(cap_depenetrationVector);
+                    if (cap_combinedLength > cap_maxMagnitude) {
+                        cap_depenetrationVector *= cap_maxMagnitude / cap_combinedLength;
+                    }
                 }
                 if (!(otherPointParameters->angleElasticity == 1f
                       && otherPointParameters->rootElasticity == 1f
@@ -315,32 +339,58 @@ public struct JiggleJobSimulate : IJobFor {
         return new float3(0f, 0f, 0f);
     }
 
-    // Returns the collider's radius in the direction of `diff` (a full 3D direction, not just the cross-section)
-    // for an ellipsoid whose semi-axes are `radii`, given per local X/Y/Z axis. Analytic solve, no iteration.
-    // When the three radii are equal - including a capsule with no per-axis shaping - this returns that radius
-    // exactly, preserving legacy circular-capsule behavior.
-    private float GetEllipseColliderRadius(JiggleCollider collider, float3 diff, float3 radii) {
-        var rx = radii.x;
-        var ry = radii.y;
-        var rz = radii.z;
-        if (rx <= 0f) {
-            return 0f;
-        }
-        if (rx == ry && ry == rz) {
-            return rx;
-        }
-        var diffLenSq = math.lengthsq(diff);
-        if (diffLenSq < 1e-12f) {
-            // diff is (almost) zero-length; fall back to the smallest radius.
-            return math.min(rx, math.min(ry, rz));
+    // Depenetrates a sphere of radius `extraRadius` centered `diff` away from a point on the capsule axis, out
+    // of the ellipsoid whose per-local-axis semi-axes are `radii`. Returns false when they do not overlap.
+    //
+    // The push is directed along the ellipsoid's surface normal, not along `diff`: on a stretched cap the two
+    // differ badly, and pushing radially both moved the point further than the surface is (the radial chord is
+    // never the shortest way out) and kicked it sideways along the surface - the constraints dragged it back,
+    // the next step disagreed again, and the contact buzzed on the cap instead of resting. The magnitude is
+    // solved analytically so the pushed point lands exactly on the surface along that normal, neither short
+    // (still penetrating) nor long (thrown clear, to fall back in next step).
+    //
+    // The surface used is the ellipsoid inflated per-axis by `extraRadius` - an approximation of the true
+    // rounded-out surface, in line with the taper's authorable-over-accurate tradeoff (see
+    // JiggleCollider.startRadius) - and with all three radii equal it reduces exactly to the legacy
+    // sphere-vs-sphere behavior.
+    private bool TryGetEllipsoidDepenetration(JiggleCollider collider, float3 diff, float3 radii, float extraRadius, out float3 depenetration) {
+        depenetration = float3.zero;
+        var inflated = math.max(radii + new float3(extraRadius), new float3(1e-6f));
+        if (inflated.x == inflated.y && inflated.y == inflated.z) {
+            // Uniform radii reduce to the plain sphere case; kept branch-light and bit-identical to the old path.
+            var radius = inflated.x;
+            var distanceSq = math.lengthsq(diff);
+            if (distanceSq >= radius * radius) {
+                return false;
+            }
+            depenetration = math.normalizesafe(diff, new float3(0f, 0f, 1f)) * (radius - math.sqrt(distanceSq));
+            return true;
         }
         collider.GetWorldAxes(out var xAxis, out var yAxis, out var zAxis);
-        var diffLen = math.sqrt(diffLenSq);
-        var a = math.dot(diff, xAxis) / diffLen;
-        var b = math.dot(diff, yAxis) / diffLen;
-        var c = math.dot(diff, zAxis) / diffLen;
-        var denom = (a * a) / (rx * rx) + (b * b) / (ry * ry) + (c * c) / (rz * rz);
-        return math.sqrt(1f / denom);
+        var local = new float3(math.dot(diff, xAxis), math.dot(diff, yAxis), math.dot(diff, zAxis));
+        var scaled = local / inflated;
+        // Signed "inside-ness" in the scaled space where the ellipsoid is the unit sphere; also the constant
+        // term of the exit quadratic below.
+        var c = math.lengthsq(scaled) - 1f;
+        if (c >= 0f) {
+            return false;
+        }
+        // Ellipsoid gradient at the point - the surface normal direction. A (nearly) centered point has no
+        // meaningful gradient and exits along the smallest axis instead, the cheapest way out.
+        var normalLocal = local / (inflated * inflated);
+        if (math.lengthsq(normalLocal) < 1e-18f) {
+            normalLocal = inflated.x <= inflated.y && inflated.x <= inflated.z ? new float3(1f, 0f, 0f)
+                : inflated.y <= inflated.z ? new float3(0f, 1f, 0f) : new float3(0f, 0f, 1f);
+        }
+        normalLocal = math.normalize(normalLocal);
+        // Exit distance along the normal: solve |(local + t * normal) / inflated|^2 = 1 for the positive root.
+        // c < 0 guarantees the discriminant is positive and the root lands outward.
+        var scaledDir = normalLocal / inflated;
+        var a = math.lengthsq(scaledDir);
+        var b = 2f * math.dot(local / (inflated * inflated), normalLocal);
+        var t = (-b + math.sqrt(b * b - 4f * a * c)) / (2f * a);
+        depenetration = (normalLocal.x * xAxis + normalLocal.y * yAxis + normalLocal.z * zAxis) * t;
+        return true;
     }
 
     // Returns the per-axis radii at `closest` (a point on the capsule's a-b segment) by interpolating between
@@ -422,7 +472,12 @@ public struct JiggleJobSimulate : IJobFor {
         return segmentPoint1 + tValue * segment;
     }
 
-    private unsafe void DepenetrateCollider(JiggleTreeJobData tree, JiggleSimulatedPoint* point, JiggleSimulatedPoint* parent, JigglePointParameters* pointParameters, JigglePointParameters* parentParameters, JiggleCollider collider) {
+    // Collects one collider's depenetration into the point's pending push rather than applying it. Applying per
+    // collider moved workingPosition between colliders, so each collider judged the previous one's result: a
+    // point that cannot satisfy all of them at once - wedged between several - chased them in turn, the outcome
+    // depended on the order they happened to be visited in, and it never came to rest. The caller combines the
+    // collected pushes and applies them once, which is order-independent and settles on a compromise instead.
+    private unsafe void DepenetrateCollider(JiggleTreeJobData tree, JiggleSimulatedPoint* point, JiggleSimulatedPoint* parent, JigglePointParameters* pointParameters, JigglePointParameters* parentParameters, JiggleCollider collider, ref float3 pendingDepenetration, ref float pendingMaxMagnitude) {
         var collisionDepenetration = new float3(0f, 0f, 0f);
         collisionDepenetration = DoDepenetration(point, parent, parentParameters, collider);
         var maxDepenetrationMagnitude = math.length(collisionDepenetration);
@@ -432,8 +487,16 @@ public struct JiggleJobSimulate : IJobFor {
             maxDepenetrationMagnitude = math.max(maxDepenetrationMagnitude, math.length(newCollisionDepenetration));
             collisionDepenetration += newCollisionDepenetration;
         }
-        collisionDepenetration = math.normalizesafe(collisionDepenetration, new float3(0,0,1)) * maxDepenetrationMagnitude;
-        point->workingPosition += collisionDepenetration;
+        // Sum clamped to the deepest single push, so overlapping segments cannot add up into a push larger
+        // than any of them asks for, while opposing segments cancel toward zero instead of being renormalized
+        // into a full-magnitude shove along whatever direction the near-zero sum happened to point (or, with
+        // the old (0,0,1) fallback, along world Z).
+        var collisionSumLength = math.length(collisionDepenetration);
+        if (collisionSumLength > maxDepenetrationMagnitude && collisionSumLength > 0f) {
+            collisionDepenetration *= maxDepenetrationMagnitude / collisionSumLength;
+        }
+        pendingDepenetration += collisionDepenetration;
+        pendingMaxMagnitude = math.max(pendingMaxMagnitude, math.length(collisionDepenetration));
 
         // Feed GetNormalizedPush's input (contact-driven elasticity softening): a point can be depenetrated
         // against several colliders/segments in the same frame (this method runs once per nearby collider), so
@@ -474,10 +537,15 @@ public struct JiggleJobSimulate : IJobFor {
 
             #region Collisions
 
+            // Every collider is measured against the same starting position and applied together below, so no
+            // collider can react to another's correction. See DepenetrateCollider.
+            var pendingDepenetration = float3.zero;
+            var pendingMaxMagnitude = 0f;
+
             var global = globalCell.Value;
             for (int index = 0; index < global.count; index++) {
                 var sceneCollider = sceneColliders[global.colliderIndices[index]];
-                DepenetrateCollider(tree, point, parent, pointParameters, parentParameters, sceneCollider);
+                DepenetrateCollider(tree, point, parent, pointParameters, parentParameters, sceneCollider, ref pendingDepenetration, ref pendingMaxMagnitude);
             }
 
             // TODO: to convert a float to a grid location we just cast, but this always rounds towards zero. Probably should be a math.round()
@@ -489,7 +557,7 @@ public struct JiggleJobSimulate : IJobFor {
                     if (broadPhaseMap.TryGetValue(grid, out var gridCell)) {
                         for (int index = 0; index < gridCell.count; index++) {
                             var sceneCollider = sceneColliders[gridCell.colliderIndices[index]];
-                            DepenetrateCollider(tree, point, parent, pointParameters, parentParameters, sceneCollider);
+                            DepenetrateCollider(tree, point, parent, pointParameters, parentParameters, sceneCollider, ref pendingDepenetration, ref pendingMaxMagnitude);
                         }
                     }
                 }
@@ -497,7 +565,22 @@ public struct JiggleJobSimulate : IJobFor {
 
             var endIndex = tree.colliderIndexOffset + tree.colliderCount;
             for (int index = (int)tree.colliderIndexOffset; index < endIndex; index++) {
-                DepenetrateCollider(tree, point, parent, pointParameters, parentParameters, personalColliders[index]);
+                DepenetrateCollider(tree, point, parent, pointParameters, parentParameters, personalColliders[index], ref pendingDepenetration, ref pendingMaxMagnitude);
+            }
+
+            // Same combination rule the individual colliders already use internally, now across all of them:
+            // the summed push, clamped to the deepest single one. With one collider touching this is exactly
+            // that collider's push, agreeing colliders keep their depth without stacking, and a wedge's
+            // opposing pushes cancel toward a stable compromise instead of oscillating.
+            if (pendingMaxMagnitude > 0f) {
+                var combinedDepenetration = pendingDepenetration;
+                var combinedLength = math.length(combinedDepenetration);
+                if (combinedLength > pendingMaxMagnitude) {
+                    combinedDepenetration *= pendingMaxMagnitude / combinedLength;
+                }
+                point->workingPosition += combinedDepenetration;
+                // Net displacement collisions caused this step; FinishStep takes its contact normal from it.
+                point->stepDepenetration += combinedDepenetration;
             }
 
             #endregion
@@ -525,7 +608,13 @@ public struct JiggleJobSimulate : IJobFor {
             // Length-based squash needs the length constraint itself to actually relax so the bone can shorten
             // under a straight-on push; angle softening alone can't dent a bone whose orientation isn't changing.
             // Capped (see MaxLengthContactSoftening) so the restoring force never fully disappears.
-            var lengthContactSoftening = math.min(contactSoftening, MaxLengthContactSoftening);
+            // Gated on squash actually being enabled: relaxing the length constraint is squash's enabler and
+            // nothing else's, and on a squashless rig it silently hands an inextensible chain (Stretch 0) an
+            // axial degree of freedom whenever contact ramps the softening - which contact then pumps, reading
+            // as the chain bouncing along its own axis. With squash off, contact softness now softens angles only.
+            var lengthContactSoftening = pointParameters->squash > 0f
+                ? math.min(contactSoftening, MaxLengthContactSoftening)
+                : 0f;
 
             #region Back-propagated motion for collisions
 
@@ -663,8 +752,31 @@ public struct JiggleJobSimulate : IJobFor {
     private unsafe void FinishStep(JiggleTreeJobData tree) {
         for (int i = 0; i < tree.pointCount; i++) {
             var point = tree.points+i;
-            point->lastPosition = point->position;
-            point->position = point->workingPosition;
+            var parameters = tree.parameters + i;
+            var newPosition = point->workingPosition;
+            var previousPosition = point->position;
+            // Velocity here is just the gap between the two stored positions, so a collision's push-out also
+            // becomes speed. That is what makes a point wedged between colliders gain a little every step until
+            // it escapes and launches away. Cancelling the whole push instead would break resting contact: at
+            // rest the push is precisely what offsets the sinking from gravity, and removing it lets gravity
+            // accumulate into the velocity every step until the chain pumps. So only the component along the
+            // contact normal is removed - the inelastic part - leaving sliding along the surface untouched.
+            var damping = parameters->contactDamping;
+            if (damping > 0f) {
+                var depenetration = point->stepDepenetration;
+                var depenetrationLengthSq = math.lengthsq(depenetration);
+                // A point that touched nothing this step has no normal to speak of and is left exactly as before.
+                if (depenetrationLengthSq > 1e-12f) {
+                    var normal = depenetration * math.rsqrt(depenetrationLengthSq);
+                    var normalSpeed = math.dot(newPosition - previousPosition, normal);
+                    previousPosition += normal * (normalSpeed * damping);
+                }
+            }
+            point->lastPosition = previousPosition;
+            point->position = newPosition;
+            // Cleared here rather than only in Cache, so a step that runs without a fresh Cache cannot reuse
+            // the previous step's push.
+            point->stepDepenetration = float3.zero;
         }
     }
 

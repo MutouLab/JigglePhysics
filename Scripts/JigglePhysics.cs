@@ -113,6 +113,32 @@ public static class JigglePhysics {
     
     public static void SetGlobalDirty() => _globalDirty = true;
 
+    /// <summary>
+    /// Marks the rigs that collect colliders from <paramref name="colliderObject"/> for a tree rebuild.
+    /// </summary>
+    /// <remarks>
+    /// For changes that alter what a rig would collect without the rig itself being touched - a collider
+    /// component being switched on or off, say. The collector set is only read when a tree is built, so
+    /// without this the change would not surface until something else happened to rebuild.
+    /// Scoped to the rigs that reference the object, because a rebuild restarts that rig's simulation and
+    /// there is no reason to make unrelated hair twitch because a chest collider was toggled. A segment whose
+    /// tree has not been built yet (scene load, as every collider enables in turn) costs nothing here.
+    /// </remarks>
+    public static void SetJiggleTreesDirtyForColliderObject(GameObject colliderObject) {
+        SetGlobalDirty();
+        if (rootJiggleTreeSegments == null) {
+            return;
+        }
+        var count = rootJiggleTreeSegments.Count;
+        for (int i = 0; i < count; i++) {
+            var segment = rootJiggleTreeSegments[i];
+            if (segment == null || segment.transform == null) continue;
+            if (segment.jiggleRigData.GetReferencesColliderObject(colliderObject)) {
+                segment.SetDirty();
+            }
+        }
+    }
+
     public static void AddJiggleCollider(JiggleColliderSerializable collider) {
         jobs.ScheduleAdd(collider);
     }

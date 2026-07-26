@@ -210,6 +210,10 @@ public struct JiggleRigData {
             var componentCount = tempColliderComponents.Count;
             for (int o = 0; o < componentCount; o++) {
                 var reference = tempColliderComponents[o];
+                // A collider component that is switched off - or sits on a deactivated object - takes no part,
+                // the way its checkbox implies. Children are collected with includeInactive so that reactivating
+                // one shows up as a change here rather than as an object that has to be re-registered.
+                if (!reference.isActiveAndEnabled) continue;
                 if (!tempSeenColliders.Add(reference)) continue;
                 signature = signature * 31 + reference.GetInstanceID();
                 colliders.Add(reference.Collider.collider);
@@ -237,6 +241,28 @@ public struct JiggleRigData {
     private static readonly List<JiggleCollider> tempValidationColliders = new();
     private static readonly List<Transform> tempValidationTransforms = new();
     private static readonly List<Transform> tempValidationEndTransforms = new();
+
+    // Whether this rig would collect colliders from the given object: registered directly, or reached through
+    // a registered JiggleColliderGroup. Lets a collider being switched on or off rebuild only the rigs that
+    // can actually see it, instead of restarting every simulation in the scene.
+    public bool GetReferencesColliderObject(GameObject colliderObject) {
+        if (colliderObject == null || jiggleColliderObjects == null) {
+            return false;
+        }
+        var count = jiggleColliderObjects.Length;
+        for (int i = 0; i < count; i++) {
+            var registered = jiggleColliderObjects[i];
+            if (registered == null) continue;
+            if (registered == colliderObject) {
+                return true;
+            }
+            if (registered.GetComponent<JiggleColliderGroup>() != null
+                && colliderObject.transform.IsChildOf(registered.transform)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     // Identity of the currently registered collider set, cheap enough to sample on every inspector change.
     public int GetColliderSignature() {
@@ -299,11 +325,26 @@ public struct JiggleRigData {
         currentLength += Vector3.Distance(lastPosition, t.position);
         t.GetLocalPositionAndRotation(out var localPosition, out var localRotation);
         var position = t.position;
+        var restLocalPosition = localPosition;
+        var restLocalRotation = new Vector4(localRotation.x, localRotation.y, localRotation.z, localRotation.w);
+        var restLocalScale = t.localScale;
+        // While playing, these bones hold whatever the simulation last wrote, so sampling them would enshrine
+        // the current sagged (and squashed) pose as the rest pose - and since every rebuild would then sample
+        // the sag it just caused, the rig walks further from its animation each time. Anything already captured
+        // is therefore carried over, and only a bone this cache has never seen is sampled fresh. The distance
+        // and scale fields above are recomputed either way: they describe proportions along the chain, which
+        // the length constraint keeps stable, rather than a pose that drifts.
+        if (Application.isPlaying && transformToCachedDataMap != null
+            && transformToCachedDataMap.TryGetValue(t, out var captured)) {
+            restLocalPosition = captured.restLocalPosition;
+            restLocalRotation = captured.restLocalRotation;
+            restLocalScale = captured.restLocalScale;
+        }
         data.Add(new JiggleTransformCachedData() {
             bone = t,
-            restLocalPosition = localPosition,
-            restLocalRotation = new Vector4(localRotation.x, localRotation.y, localRotation.z, localRotation.w),
-            restLocalScale = t.localScale,
+            restLocalPosition = restLocalPosition,
+            restLocalRotation = restLocalRotation,
+            restLocalScale = restLocalScale,
             normalizedDistanceFromRoot = currentLength / totalLength,
             lossyScale = (scale.x + scale.y + scale.z)/3f,
         });

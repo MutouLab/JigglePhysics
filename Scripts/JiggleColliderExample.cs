@@ -26,6 +26,7 @@ public class JiggleColliderExample : MonoBehaviour {
 
     private void OnEnable() {
         SyncGlobalRegistration();
+        NotifyReferencingRigs();
     }
 
     private void OnDisable() {
@@ -33,6 +34,14 @@ public class JiggleColliderExample : MonoBehaviour {
             JigglePhysics.RemoveJiggleCollider(jiggleCollider);
             registeredGlobally = false;
         }
+        NotifyReferencingRigs();
+    }
+
+    // Rigs collect the collider components on the objects they reference, skipping the ones switched off, but
+    // that set is only read when a tree is built. Toggling this component is not an edit to any rig, so nothing
+    // else would notice: without this the checkbox would appear to do nothing until the rig happened to rebuild.
+    private void NotifyReferencingRigs() {
+        JigglePhysics.SetJiggleTreesDirtyForColliderObject(gameObject);
     }
 
     private void OnValidate() {
@@ -57,6 +66,12 @@ public class JiggleColliderExample : MonoBehaviour {
     }
 
     private void OnDrawGizmos() {
+        // Gizmo callbacks ignore the enabled checkbox, so this has to be gated by hand - and by the same
+        // predicate the rigs collect on (see JiggleRigData.GetJiggleColliders), so a switched-off collider
+        // cannot keep drawing a shape that nothing collides against.
+        if (!isActiveAndEnabled) {
+            return;
+        }
         jiggleCollider.OnDrawGizmosSelected(ResolvedTransform);
     }
 }

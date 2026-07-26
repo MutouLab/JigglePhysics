@@ -257,7 +257,15 @@ public struct JiggleRigData {
         ValidateCurve(ref jiggleTreeInputParameters.collisionRadius.curve);
         ValidateCurve(ref jiggleTreeInputParameters.squash.curve);
         ValidateCurve(ref jiggleTreeInputParameters.contactSoftness.curve);
-        BuildNormalizedDistanceFromRootList();
+        // Never re-derive the cache from the bones while playing. VisitAndSetCacheData samples their live local
+        // pose, scale and spacing, but the simulation writes exactly those every frame, so tweaking any slider
+        // mid-play would capture the current jiggled (and squashed) pose as the rest pose - the authored
+        // authority every tree rebuild reads back. Same rule that made JiggleTree.restScales stop reading the
+        // bone directly. A cache that does not exist yet still has to be built, or nothing downstream has
+        // distances to work with.
+        if (!Application.isPlaying || !GetCacheIsValid()) {
+            BuildNormalizedDistanceFromRootList();
+        }
         for (int i = 0; i < 100; i++) {
             if (!TryUpdateSerialization()) {
                 break;
@@ -368,9 +376,19 @@ public struct JiggleRigData {
             return;
         }
         var boneCount = bones.Length;
+        var points = tree.points;
         for (int i = 0; i < boneCount; i++) {
             var bone = bones[i];
             var cache = GetCache(bone);
+            // A motionless root is rigid regardless of the curves, and JigglePhysics.Visit bakes that override
+            // in when the tree is built. Recomputing parameters here without reapplying it would quietly hand
+            // the root back its elasticity the first time any slider moves while playing, which reads exactly
+            // like Root Stretch changing on its own. Gated on hasTransform because Visit only overrides real
+            // points: the virtual root shares the root bone's Transform but keeps its curve-derived values.
+            if (points[i].hasTransform && GetIsRigidBone(bone)) {
+                parameters.Add(GetRigidPointParameters());
+                continue;
+            }
             parameters.Add(GetJiggleBoneParameter(cache.normalizedDistanceFromRoot));
         }
         tree.SetParameters(parameters);
@@ -378,6 +396,22 @@ public struct JiggleRigData {
     
     public JigglePointParameters GetJiggleBoneParameter(float normalizedDistanceFromRoot) {
         return jiggleTreeInputParameters.ToJigglePointParameters(normalizedDistanceFromRoot);
+    }
+
+    // Whether this bone is held rigid rather than simulated. Shared by tree construction and the live
+    // parameter update so the two cannot disagree about which bones the curves do not apply to.
+    public bool GetIsRigidBone(Transform t) {
+        return (excludeRoot && t == rootBone) || GetIsExcluded(t);
+    }
+
+    // The parameters a rigid bone gets instead of its curve-derived ones: nothing bends, stretches or softens.
+    public static JigglePointParameters GetRigidPointParameters() {
+        return new JigglePointParameters() {
+            angleElasticity = 1f,
+            lengthElasticity = 1f,
+            rootElasticity = 1f,
+            elasticitySoften = 0f
+        };
     }
     
     public Transform[] GetJiggleBoneTransforms() {

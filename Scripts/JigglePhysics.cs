@@ -358,15 +358,11 @@ public static class JigglePhysics {
             restLocalPositions.Add(cache.restLocalPosition);
             restLocalRotations.Add(new Quaternion(cache.restLocalRotation.x, cache.restLocalRotation.y, cache.restLocalRotation.z, cache.restLocalRotation.w));
             restLocalScales.Add(cache.restLocalScale);
-            var parameter = lastJiggleRig.GetJiggleBoneParameter(cache.normalizedDistanceFromRoot);
-            if ((lastJiggleRig.excludeRoot && t == lastJiggleRig.rootBone) || lastJiggleRig.GetIsExcluded(t)) {
-                parameter = new JigglePointParameters() {
-                    angleElasticity = 1f,
-                    lengthElasticity = 1f,
-                    rootElasticity = 1f,
-                    elasticitySoften = 0f
-                };
-            }
+            // Shares its predicate and its override with JiggleRigData.UpdateParameters, which has to reproduce
+            // this exactly when parameters are refreshed on a live tree.
+            var parameter = lastJiggleRig.GetIsRigidBone(t)
+                ? JiggleRigData.GetRigidPointParameters()
+                : lastJiggleRig.GetJiggleBoneParameter(cache.normalizedDistanceFromRoot);
 
             if (points[parentIndex].hasTransform) {
                 currentLength += Vector3.Distance(lastPosition, t.position);

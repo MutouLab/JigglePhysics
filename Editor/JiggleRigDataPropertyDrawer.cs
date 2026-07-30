@@ -54,8 +54,16 @@ public class JiggleRigDataPropertyDrawer : PropertyDrawer {
         if (!property.serializedObject.isEditingMultipleObjects && Application.isPlaying) {
             var rootBone = (Transform)rootProp.objectReferenceValue;
             var isRecursiveRig = false;
-            foreach (JiggleRig otherRig in Object.FindObjectsByType<JiggleRig>(FindObjectsInactive.Exclude,
-                         FindObjectsSortMode.None)) {
+#if UNITY_2023_1_OR_NEWER
+            var otherRigs = Object.FindObjectsByType<JiggleRig>(FindObjectsInactive.Exclude,
+                                                               FindObjectsSortMode.None);
+#else
+            // FindObjectsByType は Unity 2023.1 で追加された。2022.3 でも使えるよう旧APIへ分岐する
+            // (FindObjectsOfType(false) は非アクティブを除外＝FindObjectsInactive.Exclude と同義。
+            //  ソート順は全件走査して条件一致を探すだけなので依存しない)。
+            var otherRigs = Object.FindObjectsOfType<JiggleRig>(false);
+#endif
+            foreach (JiggleRig otherRig in otherRigs) {
                 var otherRoot = otherRig.GetJiggleRigData().rootBone;
                 if (rootBone && rootBone != otherRoot && rootBone.IsChildOf(otherRoot)) {
                     isRecursiveRig = true;
